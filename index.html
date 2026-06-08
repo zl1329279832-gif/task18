@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>合同评审系统</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- 顶部工具栏 -->
+  <header class="toolbar">
+    <div class="toolbar-left">
+      <h1 class="app-title">合同评审系统</h1>
+      <div class="toolbar-actions">
+        <button id="btn-import" class="btn btn-primary" title="导入合同文件">
+          <svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 1v10M4 7l4 4 4-4M2 13h12" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          导入合同
+        </button>
+        <input type="file" id="file-input" accept=".txt,.html,.htm" hidden>
+        <button id="btn-load-project" class="btn btn-secondary" title="加载已保存的评审项目">
+          <svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 3h4l2 2h6v8H2V3z" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg>
+          加载项目
+        </button>
+        <input type="file" id="project-input" accept=".json" hidden>
+      </div>
+    </div>
+    <div class="toolbar-center">
+      <div class="search-box">
+        <svg width="16" height="16" viewBox="0 0 16 16"><circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <input type="text" id="search-input" placeholder="搜索合同内容..." disabled>
+        <span id="search-count" class="search-count" hidden></span>
+        <button id="btn-search-prev" class="btn-icon" title="上一个" hidden>&#9650;</button>
+        <button id="btn-search-next" class="btn-icon" title="下一个" hidden>&#9660;</button>
+        <button id="btn-search-clear" class="btn-icon" title="清除搜索" hidden>&times;</button>
+      </div>
+    </div>
+    <div class="toolbar-right">
+      <button id="btn-save" class="btn btn-secondary" disabled title="保存评审项目到本地">
+        <svg width="16" height="16" viewBox="0 0 16 16"><path d="M12 15H4a1 1 0 01-1-1V2a1 1 0 011-1h6l3 3v10a1 1 0 01-1 1z" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M5 1v4h5V1M5 9h6M5 12h4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+        保存项目
+      </button>
+      <button id="btn-checklist" class="btn btn-secondary" disabled title="生成评审清单">
+        <svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 3h1M5 3h9M2 8h1M5 8h9M2 13h1M5 13h9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M1.5 2.5l1 1 2-2M1.5 7.5l1 1 2-2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        评审清单
+      </button>
+      <button id="btn-export" class="btn btn-accent" disabled title="导出带批注的HTML报告">
+        <svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 11V1M4 5l4-4 4 4M2 13h12" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        导出报告
+      </button>
+    </div>
+  </header>
+
+  <!-- 主体区域 -->
+  <main class="main-container">
+    <!-- 左侧：章节导航 -->
+    <aside class="sidebar sidebar-left" id="sidebar-left">
+      <div class="panel-header">
+        <h2>章节导航</h2>
+        <button id="btn-toggle-left" class="btn-icon btn-collapse" title="收起面板">&#9664;</button>
+      </div>
+      <nav id="section-nav" class="section-nav">
+        <p class="placeholder-text">请先导入合同文件</p>
+      </nav>
+    </aside>
+
+    <!-- 中间：合同文本展示 -->
+    <section class="contract-view" id="contract-view">
+      <!-- 空白欢迎状态 -->
+      <div id="welcome-screen" class="welcome-screen">
+        <div class="welcome-content">
+          <svg width="80" height="80" viewBox="0 0 80 80">
+            <rect x="15" y="5" width="50" height="70" rx="4" stroke="#94a3b8" stroke-width="2" fill="none"/>
+            <path d="M25 20h30M25 30h30M25 40h20M25 50h25" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="58" cy="58" r="16" fill="#3b82f6" opacity="0.15"/>
+            <path d="M55 58l3 3 5-6" stroke="#3b82f6" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <h2>欢迎使用合同评审系统</h2>
+          <p>点击「导入合同」按钮上传 .txt 或 .html 格式的合同文件开始评审</p>
+          <p class="hint">或拖拽文件到此区域</p>
+        </div>
+      </div>
+      <!-- 合同内容（动态填充） -->
+      <div id="contract-content" class="contract-content" hidden>
+        <div id="contract-body" class="contract-body"></div>
+      </div>
+    </section>
+
+    <!-- 右侧：批注面板 + 风险统计 -->
+    <aside class="sidebar sidebar-right" id="sidebar-right">
+      <div class="panel-header">
+        <button id="btn-toggle-right" class="btn-icon btn-collapse" title="收起面板">&#9654;</button>
+        <div class="tab-bar">
+          <button class="tab-btn active" data-tab="tab-comments">批注</button>
+          <button class="tab-btn" data-tab="tab-risks">风险统计</button>
+          <button class="tab-btn" data-tab="tab-history">评审记录</button>
+        </div>
+      </div>
+
+      <!-- 批注列表 -->
+      <div id="tab-comments" class="tab-panel active">
+        <div class="filter-bar">
+          <select id="filter-status" class="filter-select">
+            <option value="all">全部状态</option>
+            <option value="pending">待处理</option>
+            <option value="processing">处理中</option>
+            <option value="resolved">已解决</option>
+            <option value="closed">已关闭</option>
+          </select>
+          <select id="filter-risk" class="filter-select">
+            <option value="all">全部类型</option>
+            <option value="payment">付款条款</option>
+            <option value="breach">违约责任</option>
+            <option value="confidential">保密义务</option>
+            <option value="delivery">交付期限</option>
+            <option value="dispute">争议解决</option>
+            <option value="entity">主体信息缺失</option>
+          </select>
+        </div>
+        <div id="comment-list" class="comment-list">
+          <p class="placeholder-text">暂无批注</p>
+        </div>
+      </div>
+
+      <!-- 风险统计 -->
+      <div id="tab-risks" class="tab-panel">
+        <div id="risk-dashboard" class="risk-dashboard">
+          <div class="risk-summary">
+            <div class="risk-stat" id="risk-total">
+              <span class="stat-num">0</span>
+              <span class="stat-label">风险总数</span>
+            </div>
+            <div class="risk-stat risk-high" id="risk-high-count">
+              <span class="stat-num">0</span>
+              <span class="stat-label">高风险</span>
+            </div>
+            <div class="risk-stat risk-medium" id="risk-medium-count">
+              <span class="stat-num">0</span>
+              <span class="stat-label">中风险</span>
+            </div>
+            <div class="risk-stat risk-low" id="risk-low-count">
+              <span class="stat-num">0</span>
+              <span class="stat-label">低风险</span>
+            </div>
+          </div>
+          <div class="chart-container">
+            <svg id="risk-chart" width="100%" height="200" viewBox="0 0 300 200"></svg>
+          </div>
+          <div id="risk-type-list" class="risk-type-list"></div>
+        </div>
+      </div>
+
+      <!-- 评审记录 -->
+      <div id="tab-history" class="tab-panel">
+        <div id="history-list" class="history-list">
+          <p class="placeholder-text">暂无评审记录</p>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- 批注编辑对话框 -->
+  <div id="dialog-overlay" class="dialog-overlay" hidden>
+    <div id="annotation-dialog" class="dialog" role="dialog" aria-labelledby="dialog-title">
+      <div class="dialog-header">
+        <h3 id="dialog-title">添加批注</h3>
+        <button id="btn-dialog-close" class="btn-icon">&times;</button>
+      </div>
+      <div class="dialog-body">
+        <div class="form-group">
+          <label>选中文本</label>
+          <div id="dialog-selected-text" class="selected-text-preview"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="dialog-risk-type">风险类型</label>
+            <select id="dialog-risk-type" class="form-select">
+              <option value="payment">付款条款</option>
+              <option value="breach">违约责任</option>
+              <option value="confidential">保密义务</option>
+              <option value="delivery">交付期限</option>
+              <option value="dispute">争议解决</option>
+              <option value="entity">主体信息缺失</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="dialog-risk-level">风险等级</label>
+            <select id="dialog-risk-level" class="form-select">
+              <option value="high">高风险</option>
+              <option value="medium">中风险</option>
+              <option value="low">低风险</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="dialog-comment">批注内容</label>
+          <textarea id="dialog-comment" class="form-textarea" rows="4" placeholder="请输入批注说明..."></textarea>
+        </div>
+        <div class="form-group">
+          <label for="dialog-status">处理状态</label>
+          <select id="dialog-status" class="form-select">
+            <option value="pending">待处理</option>
+            <option value="processing">处理中</option>
+            <option value="resolved">已解决</option>
+            <option value="closed">已关闭</option>
+          </select>
+        </div>
+      </div>
+      <div class="dialog-footer">
+        <button id="btn-dialog-delete" class="btn btn-danger" hidden>删除</button>
+        <div class="dialog-footer-right">
+          <button id="btn-dialog-cancel" class="btn btn-secondary">取消</button>
+          <button id="btn-dialog-save" class="btn btn-primary">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 评审清单对话框 -->
+  <div id="checklist-overlay" class="dialog-overlay" hidden>
+    <div class="dialog dialog-large">
+      <div class="dialog-header">
+        <h3>评审清单</h3>
+        <button id="btn-checklist-close" class="btn-icon">&times;</button>
+      </div>
+      <div class="dialog-body">
+        <div id="checklist-content" class="checklist-content"></div>
+      </div>
+      <div class="dialog-footer">
+        <button id="btn-checklist-export" class="btn btn-accent">导出清单</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 通知提示 -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="js/fileReader.js"></script>
+  <script src="js/textParser.js"></script>
+  <script src="js/annotationRenderer.js"></script>
+  <script src="js/commentManager.js"></script>
+  <script src="js/riskAnalytics.js"></script>
+  <script src="js/reportExporter.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
