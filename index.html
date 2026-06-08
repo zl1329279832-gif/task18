@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>合同评审系统</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- 顶部工具栏 -->
+  <header class="toolbar">
+    <div class="toolbar-left">
+      <h1 class="app-title">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+        合同评审系统
+      </h1>
+      <span class="contract-title" id="contractTitle">未加载合同</span>
+    </div>
+    <div class="toolbar-center">
+      <div class="search-box">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+        </svg>
+        <input type="text" id="searchInput" placeholder="搜索合同内容..." disabled>
+        <span class="search-count" id="searchCount"></span>
+        <button id="searchClear" class="search-clear" title="清除" style="display:none">&times;</button>
+      </div>
+    </div>
+    <div class="toolbar-right">
+      <label class="btn btn-primary" id="importBtn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        导入合同
+        <input type="file" id="fileInput" accept=".txt,.html,.htm" style="display:none">
+      </label>
+      <label class="btn btn-secondary" id="importProjectBtn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </svg>
+        打开项目
+        <input type="file" id="projectFileInput" accept=".json" style="display:none">
+      </label>
+      <button class="btn btn-secondary" id="saveBtn" disabled title="保存到本地">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+          <polyline points="17 21 17 13 7 13 7 21"/>
+          <polyline points="7 3 7 8 15 8"/>
+        </svg>
+        保存
+      </button>
+      <button class="btn btn-secondary" id="exportReportBtn" disabled title="导出评审报告">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+        </svg>
+        导出报告
+      </button>
+      <button class="btn btn-secondary" id="exportProjectBtn" disabled title="导出项目文件">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        导出项目
+      </button>
+    </div>
+  </header>
+
+  <!-- 主内容区域 -->
+  <main class="main-layout">
+    <!-- 左侧：章节导航 -->
+    <aside class="sidebar-left" id="sidebarLeft">
+      <div class="sidebar-header">
+        <h3>章节导航</h3>
+      </div>
+      <nav class="chapter-nav" id="chapterNav">
+        <p class="empty-hint">请先导入合同文件</p>
+      </nav>
+    </aside>
+
+    <!-- 中间：合同内容 -->
+    <section class="content-area" id="contentArea">
+      <div class="content-placeholder" id="contentPlaceholder">
+        <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+        </svg>
+        <h2>欢迎使用合同评审系统</h2>
+        <p>请导入 TXT 或 HTML 格式的合同文件开始评审</p>
+        <p class="hint">支持拖拽文件到此处</p>
+        <div class="drop-zone" id="dropZone">
+          <p>将文件拖放到此处</p>
+        </div>
+      </div>
+      <div class="contract-content" id="contractContent" style="display:none"></div>
+    </section>
+
+    <!-- 右侧：批注面板 -->
+    <aside class="sidebar-right" id="sidebarRight">
+      <div class="sidebar-header">
+        <h3>批注管理</h3>
+        <span class="annotation-total" id="annotationTotal">0 条</span>
+      </div>
+
+      <!-- 添加批注区域 -->
+      <div class="annotation-form" id="annotationForm" style="display:none">
+        <div class="form-section">
+          <label>选中文本：</label>
+          <div class="selected-text" id="selectedText">请先在合同中选中文本</div>
+        </div>
+        <div class="form-section">
+          <label>风险类型：</label>
+          <div class="risk-type-selector" id="riskTypeSelector">
+            <button class="risk-btn" data-type="payment" style="--risk-color:#e74c3c" title="付款条款">¥ 付款条款</button>
+            <button class="risk-btn" data-type="breach" style="--risk-color:#e67e22" title="违约责任">⚠ 违约责任</button>
+            <button class="risk-btn" data-type="confidential" style="--risk-color:#9b59b6" title="保密义务">🔒 保密义务</button>
+            <button class="risk-btn" data-type="delivery" style="--risk-color:#3498db" title="交付期限">📅 交付期限</button>
+            <button class="risk-btn" data-type="dispute" style="--risk-color:#f39c12" title="争议解决">⚖ 争议解决</button>
+            <button class="risk-btn" data-type="entity" style="--risk-color:#1abc9c" title="主体信息缺失">👤 主体信息</button>
+          </div>
+        </div>
+        <div class="form-section">
+          <label>风险等级：</label>
+          <div class="risk-level-selector" id="riskLevelSelector">
+            <button class="level-btn" data-level="high" style="--level-color:#e74c3c">高风险</button>
+            <button class="level-btn active" data-level="medium" style="--level-color:#f39c12">中风险</button>
+            <button class="level-btn" data-level="low" style="--level-color:#27ae60">低风险</button>
+          </div>
+        </div>
+        <div class="form-section">
+          <label>批注说明：</label>
+          <textarea id="annotationComment" placeholder="请输入批注说明..." rows="3"></textarea>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="addAnnotationBtn">添加批注</button>
+          <button class="btn btn-ghost" id="cancelAnnotationBtn">取消</button>
+        </div>
+      </div>
+
+      <!-- 批注列表 -->
+      <div class="annotation-list" id="annotationList">
+        <p class="empty-hint">暂无批注</p>
+      </div>
+
+      <!-- 批注筛选 -->
+      <div class="annotation-filters">
+        <select id="filterRiskType">
+          <option value="">全部类型</option>
+          <option value="payment">付款条款</option>
+          <option value="breach">违约责任</option>
+          <option value="confidential">保密义务</option>
+          <option value="delivery">交付期限</option>
+          <option value="dispute">争议解决</option>
+          <option value="entity">主体信息缺失</option>
+        </select>
+        <select id="filterStatus">
+          <option value="">全部状态</option>
+          <option value="pending">待评审</option>
+          <option value="reviewing">评审中</option>
+          <option value="flagged">已标记</option>
+          <option value="resolved">已解决</option>
+          <option value="dismissed">已忽略</option>
+        </select>
+      </div>
+    </aside>
+  </main>
+
+  <!-- 底部：风险统计 -->
+  <footer class="stats-panel" id="statsPanel">
+    <div class="stats-header">
+      <h3>风险统计</h3>
+      <div class="stats-tabs">
+        <button class="tab-btn active" data-tab="chart">图表</button>
+        <button class="tab-btn" data-tab="checklist">评审清单</button>
+        <button class="tab-btn" data-tab="validation">定位检查</button>
+      </div>
+    </div>
+    <div class="stats-content">
+      <div class="tab-content active" id="tabChart">
+        <div class="chart-container">
+          <div class="chart-box">
+            <h4>风险类型分布</h4>
+            <div id="barChart"></div>
+          </div>
+          <div class="chart-box">
+            <h4>风险等级分布</h4>
+            <div id="pieChart"></div>
+          </div>
+          <div class="chart-box stats-summary" id="statsSummary">
+            <h4>统计摘要</h4>
+            <div class="summary-cards" id="summaryCards"></div>
+          </div>
+        </div>
+      </div>
+      <div class="tab-content" id="tabChecklist">
+        <div id="checklistContent">
+          <p class="empty-hint">暂无批注数据</p>
+        </div>
+      </div>
+      <div class="tab-content" id="tabValidation">
+        <div id="validationContent">
+          <p class="empty-hint">导入合同并添加批注后可进行定位检查</p>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Toast 通知 -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- 确认对话框 -->
+  <div class="modal-overlay" id="modalOverlay" style="display:none">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h3 id="modalTitle">确认</h3>
+        <button class="modal-close" id="modalClose">&times;</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-footer" id="modalFooter"></div>
+    </div>
+  </div>
+
+  <!-- 批注编辑对话框 -->
+  <div class="modal-overlay" id="editModalOverlay" style="display:none">
+    <div class="modal" id="editModal">
+      <div class="modal-header">
+        <h3>编辑批注</h3>
+        <button class="modal-close" id="editModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-section">
+          <label>风险类型：</label>
+          <select id="editRiskType">
+            <option value="payment">付款条款</option>
+            <option value="breach">违约责任</option>
+            <option value="confidential">保密义务</option>
+            <option value="delivery">交付期限</option>
+            <option value="dispute">争议解决</option>
+            <option value="entity">主体信息缺失</option>
+          </select>
+        </div>
+        <div class="form-section">
+          <label>风险等级：</label>
+          <select id="editRiskLevel">
+            <option value="high">高风险</option>
+            <option value="medium">中风险</option>
+            <option value="low">低风险</option>
+          </select>
+        </div>
+        <div class="form-section">
+          <label>批注说明：</label>
+          <textarea id="editComment" rows="4"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="editSaveBtn">保存</button>
+        <button class="btn btn-ghost" id="editCancelBtn">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/file-reader.js"></script>
+  <script src="js/text-parser.js"></script>
+  <script src="js/annotation-manager.js"></script>
+  <script src="js/annotation-renderer.js"></script>
+  <script src="js/risk-statistics.js"></script>
+  <script src="js/report-exporter.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
