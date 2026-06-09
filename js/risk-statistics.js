@@ -1,6 +1,7 @@
 /**
  * risk-statistics.js - 风险统计模块
  * 负责六类风险归类汇总、SVG图表、评审清单生成、标注有效性验证
+ * 支持stale批注统计与迁移触发
  */
 const RiskStatistics = (() => {
 
@@ -10,6 +11,8 @@ const RiskStatistics = (() => {
   function computeStats(annotations) {
     const stats = {
       total: annotations.length,
+      active: 0,
+      stale: 0,
       byType: {},
       byLevel: { high: 0, medium: 0, low: 0 },
       byStatus: {},
@@ -28,6 +31,14 @@ const RiskStatistics = (() => {
     });
 
     annotations.forEach(ann => {
+      // 统计stale
+      if (ann.stale) {
+        stats.stale++;
+        return; // 失效批注不计入正常统计
+      }
+
+      stats.active++;
+
       if (stats.byType[ann.riskType] !== undefined) {
         stats.byType[ann.riskType]++;
       }
@@ -160,22 +171,26 @@ const RiskStatistics = (() => {
    * 生成评审清单 HTML
    */
   function generateChecklist(annotations, sections) {
-    if (annotations.length === 0) {
+    // 分离活跃和失效批注
+    const activeAnns = annotations.filter(a => !a.stale);
+    const staleAnns = annotations.filter(a => a.stale);
+
+    if (activeAnns.length === 0 && staleAnns.length === 0) {
       return '<p class="checklist-empty">暂无批注，请先对合同条款进行标注。</p>';
     }
 
     let html = '<div class="checklist">';
     html += `<div class="checklist-header">
       <h3>合同评审清单</h3>
-      <p>共 ${annotations.length} 条批注 |
-        高风险 ${annotations.filter(a => a.riskLevel === 'high').length} 条 |
-        待处理 ${annotations.filter(a => a.status === 'pending' || a.status === 'reviewing').length} 条
+      <p>共 ${activeAnns.length} 条有效批注${staleAnns.length > 0 ? `、${staleAnns.length} 条失效批注` : ''} |
+        高风险 ${activeAnns.filter(a => a.riskLevel === 'high').length} 条 |
+        待处理 ${activeAnns.filter(a => a.status === 'pending' || a.status === 'reviewing').length} 条
       </p>
     </div>`;
 
-    // 按风险类型分组
+    // 按风险类型分组（仅活跃批注）
     const grouped = {};
-    annotations.forEach(ann => {
+    activeAnns.forEach(ann => {
       if (!grouped[ann.riskType]) grouped[ann.riskType] = [];
       grouped[ann.riskType].push(ann);
     });
@@ -217,14 +232,43 @@ const RiskStatistics = (() => {
       html += '</tbody></table></div>';
     });
 
+    // 失效批注区域
+    if (staleAnns.length > 0) {
+      html += `<div class="checklist-group stale-group">
+        <h4 style="color:#95a5a6">&#9888; 失效批注 (${staleAnns.length}条)</h4>
+        <table class="checklist-table">
+          <thead>
+            <tr>
+              <th>原风险类型</th>
+              <th>条款内容</th>
+              <th>失效原因</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+      staleAnns.forEach(ann => {
+        const rt = AnnotationManager.RISK_TYPES[ann.riskType];
+        html += `<tr class="stale-row">
+          <td><span class="badge" style="background:#95a5a6">${rt ? rt.label : '未知'}</span></td>
+          <td class="anchor-text" title="${AnnotationRenderer.escapeHTML(ann.anchorText)}">${AnnotationRenderer.escapeHTML(truncate(ann.anchorText, 30))}</td>
+          <td>${AnnotationRenderer.escapeHTML(ann.staleReason || '未知原因')}</td>
+          <td><button class="btn-delete-stale" data-id="${ann.id}" title="删除此失效批注">删除</button></td>
+        </tr>`;
+      });
+
+      html += '</tbody></table></div>';
+    }
+
     html += '</div>';
     return html;
   }
 
   /**
-   * 验证所有批注的定位有效性
+   * 验证所有批注的定位有效性（增强版：自动修正和标记stale）
+   * @param {boolean} autoApply - 是否自动应用修正和标记stale
    */
-  function validateAnnotations(annotations, sections) {
+  function validateAnnotations(annotations, sections, autoApply) {
     const results = {
       valid: [],
       corrected: [],
@@ -232,6 +276,12 @@ const RiskStatistics = (() => {
     };
 
     annotations.forEach(ann => {
+      // 已经是stale的跳过验证
+      if (ann.stale) {
+        results.invalid.push({ annotation: ann, reason: ann.staleReason || '已标记失效' });
+        return;
+      }
+
       const result = TextParser.validateAnnotationPosition(ann, sections);
       if (result.valid && !result.corrected) {
         results.valid.push(ann);
@@ -241,6 +291,46 @@ const RiskStatistics = (() => {
         results.invalid.push({ annotation: ann, reason: result.reason });
       }
     });
+
+    // 自动应用修正和标记stale
+    if (autoApply) {
+      // 修正位置偏移的批注
+      for (const item of results.corrected) {
+        const ann = item.annotation;
+        const corr = item.correction;
+        ann.sectionId = corr.newSectionId || ann.sectionId;
+        ann.paragraphIndex = corr.newParagraphIndex !== undefined ? corr.newParagraphIndex : ann.paragraphIndex;
+        ann.startOffset = corr.newStart;
+        ann.endOffset = corr.newEnd;
+        ann.updatedAt = new Date().toISOString();
+
+        // 更新上下文
+        const ctx = TextParser.extractContext(sections, ann.sectionId, ann.paragraphIndex, ann.startOffset, ann.endOffset);
+        ann.contextBefore = ctx.before;
+        ann.contextAfter = ctx.after;
+
+        // 清除stale标记
+        if (ann.stale) {
+          ann.stale = false;
+          ann.staleSince = null;
+          ann.staleReason = null;
+        }
+
+        ann.history.push({
+          action: 'auto_corrected',
+          newStart: corr.newStart,
+          newEnd: corr.newEnd,
+          time: new Date().toISOString()
+        });
+      }
+
+      // 标记无效批注为stale
+      for (const item of results.invalid) {
+        if (!item.annotation.stale) {
+          AnnotationManager.markStale(item.annotation.id, item.reason);
+        }
+      }
+    }
 
     return results;
   }
@@ -255,20 +345,30 @@ const RiskStatistics = (() => {
     }
 
     let html = '';
+
     if (results.corrected.length > 0) {
       html += `<div class="validation-warning">
         <strong>已自动修正 ${results.corrected.length} 条批注定位</strong>
-      </div>`;
-    }
-    if (results.invalid.length > 0) {
-      html += `<div class="validation-error">
-        <strong>${results.invalid.length} 条批注定位失效：</strong>
         <ul>`;
-      results.invalid.forEach(item => {
-        html += `<li>${AnnotationRenderer.escapeHTML(truncate(item.annotation.anchorText, 20))} - ${item.reason}</li>`;
+      results.corrected.forEach(item => {
+        html += `<li>${AnnotationRenderer.escapeHTML(truncate(item.annotation.anchorText, 20))} - 位置已修正</li>`;
       });
       html += '</ul></div>';
     }
+
+    if (results.invalid.length > 0) {
+      html += `<div class="validation-error">
+        <strong>${results.invalid.length} 条批注定位失效（已标记为失效）：</strong>
+        <ul>`;
+      results.invalid.forEach(item => {
+        html += `<li>
+          <span>${AnnotationRenderer.escapeHTML(truncate(item.annotation.anchorText, 20))}</span>
+          <span class="stale-reason"> - ${AnnotationRenderer.escapeHTML(item.reason)}</span>
+        </li>`;
+      });
+      html += '</ul></div>';
+    }
+
     container.innerHTML = html;
   }
 

@@ -1,10 +1,26 @@
 /**
  * report-exporter.js - 报告导出模块
  * 负责带批注HTML报告生成、localStorage存取、完整状态序列化
+ * 导出时过滤失效/已忽略批注、版本兼容
  */
 const ReportExporter = (() => {
   const STORAGE_KEY = 'contract_review_data';
   const MAX_LOCAL_STORAGE_SIZE = 5 * 1024 * 1024; // 5MB
+  const CURRENT_VERSION = '1.1';
+
+  /**
+   * 过滤可导出的批注（排除 stale 和 dismissed）
+   * @returns {{exportable: Array, excluded: {stale: number, dismissed: number}}}
+   */
+  function filterExportableAnnotations(annotations) {
+    const excluded = { stale: 0, dismissed: 0 };
+    const exportable = annotations.filter(ann => {
+      if (ann.stale) { excluded.stale++; return false; }
+      if (ann.status === 'dismissed') { excluded.dismissed++; return false; }
+      return true;
+    });
+    return { exportable, excluded };
+  }
 
   /**
    * 导出带批注的 HTML 报告
@@ -12,6 +28,10 @@ const ReportExporter = (() => {
   function exportReport(sections, annotations, stats) {
     const now = new Date();
     const dateStr = now.toLocaleString('zh-CN');
+
+    // 过滤批注：排除 stale 和 dismissed
+    const { exportable, excluded } = filterExportableAnnotations(annotations);
+    const totalExcluded = excluded.stale + excluded.dismissed;
 
     let reportHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -25,6 +45,7 @@ const ReportExporter = (() => {
   .report-header { text-align: center; border-bottom: 3px solid #2c3e50; padding-bottom: 20px; margin-bottom: 30px; }
   .report-header h1 { font-size: 24px; color: #2c3e50; }
   .report-header .meta { color: #7f8c8d; font-size: 14px; margin-top: 8px; }
+  .report-header .excluded-note { color: #e67e22; font-size: 12px; margin-top: 4px; }
   .summary { background: #f8f9fa; border-radius: 8px; padding: 20px; margin-bottom: 30px; }
   .summary h2 { font-size: 18px; margin-bottom: 12px; color: #2c3e50; }
   .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
@@ -53,13 +74,14 @@ const ReportExporter = (() => {
 <body>
 <div class="report-header">
   <h1>合同评审报告</h1>
-  <div class="meta">生成时间：${dateStr} | 批注总数：${annotations.length} 条</div>
+  <div class="meta">生成时间：${dateStr} | 有效批注：${exportable.length} 条</div>
+  ${totalExcluded > 0 ? `<div class="excluded-note">已排除 ${excluded.stale} 条失效批注、${excluded.dismissed} 条已忽略批注</div>` : ''}
 </div>`;
 
-    // 统计摘要
-    const highCount = annotations.filter(a => a.riskLevel === 'high').length;
-    const mediumCount = annotations.filter(a => a.riskLevel === 'medium').length;
-    const lowCount = annotations.filter(a => a.riskLevel === 'low').length;
+    // 统计摘要（基于可导出的批注）
+    const highCount = exportable.filter(a => a.riskLevel === 'high').length;
+    const mediumCount = exportable.filter(a => a.riskLevel === 'medium').length;
+    const lowCount = exportable.filter(a => a.riskLevel === 'low').length;
 
     reportHTML += `
 <div class="summary">
@@ -71,13 +93,13 @@ const ReportExporter = (() => {
   </div>
 </div>`;
 
-    // 合同正文（带批注）
+    // 合同正文（带批注，只含可导出的）
     sections.forEach(section => {
       reportHTML += `<div class="section">
         <h2>${escapeHTML(section.title)}</h2>`;
 
       section.paragraphs.forEach(para => {
-        const paraAnns = annotations.filter(a =>
+        const paraAnns = exportable.filter(a =>
           a.sectionId === section.id && a.paragraphIndex === para.index
         ).sort((a, b) => a.startOffset - b.startOffset);
 
@@ -106,13 +128,13 @@ const ReportExporter = (() => {
       reportHTML += '</div>';
     });
 
-    // 评审清单
+    // 评审清单（只含可导出的批注）
     reportHTML += `<div class="checklist-section">
       <h2>评审清单</h2>`;
 
     // 按风险类型分组
     const grouped = {};
-    annotations.forEach(ann => {
+    exportable.forEach(ann => {
       if (!grouped[ann.riskType]) grouped[ann.riskType] = [];
       grouped[ann.riskType].push(ann);
     });
@@ -228,7 +250,7 @@ const ReportExporter = (() => {
    */
   function exportProjectState(sections, annotations, contractTitle) {
     return {
-      version: '1.0',
+      version: CURRENT_VERSION,
       contractTitle: contractTitle || '未命名合同',
       sections: sections,
       annotations: annotations,
@@ -237,13 +259,14 @@ const ReportExporter = (() => {
   }
 
   /**
-   * 导入项目状态
+   * 导入项目状态（兼容 1.0 和 1.1）
    */
   function importProjectState(stateData) {
     if (!stateData || !stateData.sections || !stateData.annotations) {
       throw new Error('无效的项目数据格式');
     }
-    if (stateData.version !== '1.0') {
+    // 兼容旧版本
+    if (stateData.version && stateData.version !== '1.0' && stateData.version !== CURRENT_VERSION) {
       console.warn('项目数据版本不匹配，尝试兼容加载');
     }
     return {

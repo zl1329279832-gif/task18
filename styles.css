@@ -960,6 +960,105 @@ select {
   .toolbar-right .btn span { display: none; }
 }
 
+/* ==================== Stale Annotations ==================== */
+
+/* 失效批注高亮 - 灰色虚线 */
+.annotation-highlight.stale {
+  background-color: rgba(149, 165, 166, 0.1) !important;
+  border-bottom: 2px dashed #95a5a6 !important;
+  text-decoration: line-through;
+  text-decoration-color: rgba(149, 165, 166, 0.5);
+  opacity: 0.7;
+  cursor: help;
+}
+
+/* 批注列表中的失效项 */
+.annotation-item.stale {
+  background: #f8f8f8;
+  border-left: 3px solid #95a5a6;
+  opacity: 0.75;
+}
+
+.annotation-item.stale .anchor-text {
+  text-decoration: line-through;
+  color: #999;
+}
+
+/* 失效标签 */
+.stale-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #95a5a6;
+  color: #fff;
+  font-size: 10px;
+  margin-left: 4px;
+}
+
+/* 失效原因信息 */
+.stale-info {
+  font-size: 11px;
+  color: #e74c3c;
+  margin: 2px 0 4px;
+  padding: 2px 6px;
+  background: #fdf2f2;
+  border-radius: 3px;
+}
+
+/* 导航中的失效批注计数 */
+.nav-badge.stale-badge {
+  background: #95a5a6;
+  color: #fff;
+  margin-left: 2px;
+}
+
+/* 清单中失效批注区域 */
+.stale-group {
+  opacity: 0.8;
+  border-top: 2px dashed #ddd;
+  padding-top: 12px;
+  margin-top: 16px;
+}
+
+.stale-row {
+  background: #f8f8f8;
+}
+
+.stale-reason {
+  color: #e74c3c;
+  font-size: 12px;
+}
+
+/* 删除失效批注按钮 */
+.btn-delete-stale {
+  padding: 2px 8px;
+  border: 1px solid #e74c3c;
+  border-radius: 3px;
+  background: #fff;
+  color: #e74c3c;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-delete-stale:hover {
+  background: #e74c3c;
+  color: #fff;
+}
+
+/* 验证结果样式增强 */
+.validation-warning ul,
+.validation-error ul {
+  margin-top: 6px;
+  padding-left: 20px;
+  font-size: 12px;
+}
+
+.validation-warning li,
+.validation-error li {
+  margin: 3px 0;
+}
+
 /* ==================== Print ==================== */
 @media print {
   .toolbar, .sidebar-left, .sidebar-right, .stats-panel { display: none !important; }

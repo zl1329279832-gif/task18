@@ -1,6 +1,7 @@
 /**
  * annotation-manager.js - 批注管理模块
  * 负责批注CRUD、去重检测、稳定ID生成、状态流转
+ * stale标记、迁移结果应用、上下文记录
  */
 const AnnotationManager = (() => {
   // 风险类型配置
@@ -56,6 +57,7 @@ const AnnotationManager = (() => {
     for (const ann of annotations) {
       if (ann.sectionId !== sectionId || ann.paragraphIndex !== paraIdx) continue;
       if (ann.riskType !== riskType) continue;
+      if (ann.stale) continue; // 失效批注不参与重复检测
 
       // 检查范围重叠
       const overlapStart = Math.max(ann.startOffset, startOffset);
@@ -71,9 +73,10 @@ const AnnotationManager = (() => {
   }
 
   /**
-   * 添加批注
+   * 添加批注（扩展：支持上下文信息）
    */
-  function addAnnotation({ sectionId, paragraphIndex, startOffset, endOffset, anchorText, riskType, riskLevel, comment }) {
+  function addAnnotation({ sectionId, paragraphIndex, startOffset, endOffset, anchorText,
+                           riskType, riskLevel, comment, contextBefore, contextAfter, paragraphFingerprint }) {
     // 校验风险类型
     if (!RISK_TYPES[riskType]) {
       throw new Error(`无效的风险类型: ${riskType}`);
@@ -99,6 +102,15 @@ const AnnotationManager = (() => {
       riskLevel: riskLevel || 'medium',
       comment: comment || '',
       status: 'pending',
+      // 上下文信息（用于迁移消歧）
+      contextBefore: contextBefore || '',
+      contextAfter: contextAfter || '',
+      paragraphFingerprint: paragraphFingerprint || '',
+      // 有效性标记
+      stale: false,
+      staleSince: null,
+      staleReason: null,
+      // 时间戳
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       history: [{ action: 'created', time: new Date().toISOString(), status: 'pending' }]
@@ -139,11 +151,12 @@ const AnnotationManager = (() => {
       throw new Error(`无法从 "${currentFlow.label}" 转到 "${STATUS_FLOW[newStatus].label}"`);
     }
 
+    const oldStatus = ann.status;
     ann.status = newStatus;
     ann.updatedAt = new Date().toISOString();
     ann.history.push({
       action: 'status_change',
-      from: ann.status,
+      from: oldStatus,
       to: newStatus,
       time: new Date().toISOString()
     });
@@ -164,6 +177,119 @@ const AnnotationManager = (() => {
   }
 
   /**
+   * 标记批注为失效（迁移失败时调用）
+   */
+  function markStale(id, reason) {
+    const ann = annotations.find(a => a.id === id);
+    if (!ann) return;
+    ann.stale = true;
+    ann.staleSince = new Date().toISOString();
+    ann.staleReason = reason || '锚点定位失效';
+    ann.updatedAt = new Date().toISOString();
+    ann.history.push({
+      action: 'marked_stale',
+      reason: ann.staleReason,
+      time: new Date().toISOString()
+    });
+    notifyListeners('stale', ann);
+  }
+
+  /**
+   * 清除失效标记（迁移成功后调用）
+   */
+  function clearStale(id) {
+    const ann = annotations.find(a => a.id === id);
+    if (!ann || !ann.stale) return;
+    ann.stale = false;
+    ann.staleSince = null;
+    ann.staleReason = null;
+    ann.updatedAt = new Date().toISOString();
+    ann.history.push({
+      action: 'stale_cleared',
+      time: new Date().toISOString()
+    });
+    notifyListeners('update', ann);
+  }
+
+  /**
+   * 获取所有失效批注
+   */
+  function getStaleAnnotations() {
+    return annotations.filter(a => a.stale);
+  }
+
+  /**
+   * 批量应用迁移结果
+   * @param {object} migrationResult - TextParser.migrateAnnotations 的返回值
+   */
+  function applyMigrationResult(migrationResult) {
+    // 应用成功迁移（位置有变化的）
+    for (const item of migrationResult.migrated) {
+      const ann = annotations.find(a => a.id === item.annotation.id);
+      if (!ann) continue;
+
+      const oldSectionId = ann.sectionId;
+      const oldParaIdx = ann.paragraphIndex;
+      const oldStart = ann.startOffset;
+
+      ann.sectionId = item.newSectionId;
+      ann.paragraphIndex = item.newParagraphIndex;
+      ann.startOffset = item.newStart;
+      ann.endOffset = item.newEnd;
+      ann.contextBefore = item.contextBefore;
+      ann.contextAfter = item.contextAfter;
+      ann.paragraphFingerprint = item.paragraphFingerprint;
+      ann.updatedAt = new Date().toISOString();
+
+      // 清除可能的旧 stale 标记
+      if (ann.stale) {
+        ann.stale = false;
+        ann.staleSince = null;
+        ann.staleReason = null;
+      }
+
+      ann.history.push({
+        action: 'migrated',
+        from: { sectionId: oldSectionId, paragraphIndex: oldParaIdx, startOffset: oldStart },
+        to: { sectionId: ann.sectionId, paragraphIndex: ann.paragraphIndex, startOffset: ann.startOffset },
+        confidence: item.confidence,
+        time: new Date().toISOString()
+      });
+    }
+
+    // 应用未变化的（更新上下文信息）
+    for (const item of migrationResult.unchanged) {
+      const ann = annotations.find(a => a.id === item.annotation.id);
+      if (!ann) continue;
+      ann.contextBefore = item.contextBefore;
+      ann.contextAfter = item.contextAfter;
+      ann.paragraphFingerprint = item.paragraphFingerprint;
+      if (ann.stale) {
+        ann.stale = false;
+        ann.staleSince = null;
+        ann.staleReason = null;
+      }
+    }
+
+    // 标记失效的
+    for (const item of migrationResult.stale) {
+      const ann = annotations.find(a => a.id === item.annotation.id);
+      if (!ann) continue;
+      ann.stale = true;
+      ann.staleSince = new Date().toISOString();
+      ann.staleReason = item.reason;
+      ann.updatedAt = new Date().toISOString();
+      ann.history.push({
+        action: 'marked_stale',
+        reason: item.reason,
+        time: new Date().toISOString()
+      });
+    }
+
+    notifyListeners('migration', null);
+  }
+
+  /**
    * 获取指定章节/段落的批注
    */
   function getAnnotationsForParagraph(sectionId, paragraphIndex) {
@@ -177,6 +303,13 @@ const AnnotationManager = (() => {
    */
   function getAllAnnotations() {
     return [...annotations];
+  }
+
+  /**
+   * 获取活跃批注（排除失效的）
+   */
+  function getActiveAnnotations() {
+    return annotations.filter(a => !a.stale);
   }
 
   /**
@@ -194,10 +327,33 @@ const AnnotationManager = (() => {
   }
 
   /**
-   * 批量导入批注（用于恢复）
+   * 批量导入批注（用于恢复，自动补充缺失字段以兼容旧数据）
    */
   function importAnnotations(data) {
-    annotations = Array.isArray(data) ? data : [];
+    const imported = Array.isArray(data) ? data : [];
+    annotations = imported.map(ann => ({
+      // 旧字段
+      id: ann.id || generateStableId(ann.sectionId || '', ann.paragraphIndex || 0, ann.anchorText || ''),
+      sectionId: ann.sectionId || '',
+      paragraphIndex: ann.paragraphIndex || 0,
+      startOffset: ann.startOffset || 0,
+      endOffset: ann.endOffset || 0,
+      anchorText: ann.anchorText || '',
+      riskType: ann.riskType || 'payment',
+      riskLevel: ann.riskLevel || 'medium',
+      comment: ann.comment || '',
+      status: ann.status || 'pending',
+      createdAt: ann.createdAt || new Date().toISOString(),
+      updatedAt: ann.updatedAt || new Date().toISOString(),
+      history: ann.history || [],
+      // 新增字段 - 向后兼容
+      contextBefore: ann.contextBefore || '',
+      contextAfter: ann.contextAfter || '',
+      paragraphFingerprint: ann.paragraphFingerprint || '',
+      stale: ann.stale || false,
+      staleSince: ann.staleSince || null,
+      staleReason: ann.staleReason || null
+    }));
     notifyListeners('importAll', null);
   }
 
@@ -228,8 +384,9 @@ const AnnotationManager = (() => {
   return {
     RISK_TYPES, RISK_LEVELS, STATUS_FLOW,
     addAnnotation, updateAnnotation, deleteAnnotation, changeStatus,
-    getAnnotationsForParagraph, getAllAnnotations,
+    getAnnotationsForParagraph, getAllAnnotations, getActiveAnnotations,
     getAnnotationsByRiskType, getAnnotationsByStatus,
+    getStaleAnnotations, markStale, clearStale, applyMigrationResult,
     importAnnotations, clearAll,
     checkDuplicate, onChange
   };

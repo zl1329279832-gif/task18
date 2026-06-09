@@ -1,6 +1,7 @@
 /**
  * annotation-renderer.js - 标注渲染模块
  * 负责DOM渲染、高亮绘制、虚拟滚动、搜索高亮
+ * 支持stale批注渲染、筛选同步高亮
  */
 const AnnotationRenderer = (() => {
   // 虚拟滚动配置
@@ -11,6 +12,9 @@ const AnnotationRenderer = (() => {
   let observer = null;
   let currentSearchTerm = '';
   let searchMatches = [];
+
+  // 高亮筛选状态（与右侧列表筛选联动）
+  let highlightFilter = { riskType: '', status: '' };
 
   /**
    * 初始化渲染器
@@ -84,7 +88,7 @@ const AnnotationRenderer = (() => {
       observer.observe(wrapper);
     });
 
-    // 更新批注计数
+    // 更新批注计数（只计活跃批注）
     updateAnnotationCounts(annotations);
   }
 
@@ -135,29 +139,50 @@ const AnnotationRenderer = (() => {
   }
 
   /**
+   * 设置高亮筛选条件（与右侧列表筛选联动）
+   */
+  function setHighlightFilter(riskType, status) {
+    highlightFilter.riskType = riskType || '';
+    highlightFilter.status = status || '';
+    refreshHighlights();
+  }
+
+  /**
+   * 判断批注是否通过当前筛选条件
+   */
+  function passesFilter(annotation) {
+    if (highlightFilter.riskType && annotation.riskType !== highlightFilter.riskType) return false;
+    if (highlightFilter.status && annotation.status !== highlightFilter.status) return false;
+    return true;
+  }
+
+  /**
    * 对指定章节应用高亮
    */
   function applyHighlights(sectionId, contentEl) {
-    const annotations = AnnotationManager.getAllAnnotations()
+    const allAnnotations = AnnotationManager.getAllAnnotations()
       .filter(a => a.sectionId === sectionId);
 
-    if (annotations.length === 0 && !currentSearchTerm) return;
+    if (allAnnotations.length === 0 && !currentSearchTerm) return;
 
     const paragraphs = contentEl.querySelectorAll('.paragraph');
     paragraphs.forEach(paraEl => {
       const paraIdx = parseInt(paraEl.dataset.paraIndex);
-      const paraAnns = annotations.filter(a => a.paragraphIndex === paraIdx);
+      const paraAnns = allAnnotations.filter(a => a.paragraphIndex === paraIdx);
       const text = paraEl.textContent;
 
       // 收集所有需要高亮的范围
       let highlights = [];
 
-      // 批注高亮
+      // 批注高亮（区分正常和stale，应用筛选）
       paraAnns.forEach(ann => {
+        // 筛选过滤：不通过筛选的批注不渲染高亮
+        if (!passesFilter(ann)) return;
+
         highlights.push({
           start: ann.startOffset,
           end: ann.endOffset,
-          type: 'annotation',
+          type: ann.stale ? 'stale-annotation' : 'annotation',
           data: ann
         });
       });
@@ -208,6 +233,13 @@ const AnnotationRenderer = (() => {
           data-annotation-id="${h.data.id}"
           style="background-color: ${color}20; border-bottom: 2px solid ${color}"
           title="${rt ? rt.label : ''}: ${escapeHTML(h.data.comment || '')}">${highlighted}</mark>`;
+      } else if (h.type === 'stale-annotation') {
+        // 失效批注：灰色虚线
+        const reason = h.data.staleReason || '锚点失效';
+        result += `<mark class="annotation-highlight stale"
+          data-annotation-id="${h.data.id}"
+          style="background-color: #95a5a620; border-bottom: 2px dashed #95a5a6"
+          title="[已失效] ${escapeHTML(reason)}">${highlighted}</mark>`;
       } else {
         result += `<mark class="search-highlight">${highlighted}</mark>`;
       }
@@ -370,18 +402,32 @@ const AnnotationRenderer = (() => {
   }
 
   /**
-   * 更新章节批注计数
+   * 更新章节批注计数（只计活跃批注）
    */
   function updateAnnotationCounts(annotations) {
     const counts = {};
     annotations.forEach(a => {
-      counts[a.sectionId] = (counts[a.sectionId] || 0) + 1;
+      if (!a.stale) {
+        counts[a.sectionId] = (counts[a.sectionId] || 0) + 1;
+      }
+    });
+
+    // stale计数
+    const staleCounts = {};
+    annotations.forEach(a => {
+      if (a.stale) {
+        staleCounts[a.sectionId] = (staleCounts[a.sectionId] || 0) + 1;
+      }
     });
 
     document.querySelectorAll('.annotation-count').forEach(el => {
       const sectionId = el.dataset.section;
       const count = counts[sectionId] || 0;
-      el.textContent = count > 0 ? `(${count} 条批注)` : '';
+      const staleCount = staleCounts[sectionId] || 0;
+      let text = '';
+      if (count > 0) text += `(${count} 条批注)`;
+      if (staleCount > 0) text += ` (${staleCount} 条失效)`;
+      el.textContent = text;
     });
   }
 
@@ -404,11 +450,12 @@ const AnnotationRenderer = (() => {
     sections = [];
     currentSearchTerm = '';
     searchMatches = [];
+    highlightFilter = { riskType: '', status: '' };
   }
 
   return {
     init, renderSections, refreshHighlights, search, onSearchComplete,
     scrollToAnnotation, getSelection, destroy, getSearchMatchCount,
-    ensureSectionRendered, escapeHTML
+    ensureSectionRendered, escapeHTML, setHighlightFilter
   };
 })();
