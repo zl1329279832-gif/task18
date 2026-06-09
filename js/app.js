@@ -867,13 +867,17 @@ const App = (() => {
    */
   function renderSummaryCards(stats) {
     const cards = [
-      { num: stats.total, label: '总批注', color: 'var(--primary)' },
+      { num: stats.total, label: '有效批注', color: 'var(--primary)' },
       { num: stats.byLevel.high, label: '高风险', color: 'var(--level-high)' },
       { num: stats.byLevel.medium, label: '中风险', color: 'var(--level-medium)' },
       { num: stats.byLevel.low, label: '低风险', color: 'var(--level-low)' },
       { num: stats.byStatus.pending + stats.byStatus.reviewing, label: '待处理', color: 'var(--status-pending)' },
       { num: stats.byStatus.resolved, label: '已解决', color: 'var(--status-resolved)' }
     ];
+    // 有失效批注时追加一张卡片
+    if (stats.invalidatedCount > 0) {
+      cards.push({ num: stats.invalidatedCount, label: '已失效', color: '#bdc3c7' });
+    }
 
     DOM.summaryCards.innerHTML = cards.map(card =>
       `<div class="summary-card">
@@ -1066,8 +1070,8 @@ const App = (() => {
       return;
     }
 
-    const { diffResult, suggestions, riskDeltas, migrationStats } = state.comparisonData;
-    ComparisonExporter.exportComparisonReport(diffResult, suggestions, riskDeltas, migrationStats);
+    const { diffResult, suggestions, riskDeltas, migrationStats, oldAnnotations, newAnnotations } = state.comparisonData;
+    ComparisonExporter.exportComparisonReport(diffResult, suggestions, riskDeltas, migrationStats, oldAnnotations, newAnnotations);
     showToast('对比报告导出成功', 'success');
   }
 

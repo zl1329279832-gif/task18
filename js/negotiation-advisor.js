@@ -398,13 +398,16 @@ const NegotiationAdvisor = (() => {
         if (paraDiff.changeType === 'unchanged') continue;
 
         const relevantText = paraDiff.newParagraph?.text || paraDiff.oldParagraph?.text || '';
+        // 对于删除检测类规则，也需要在旧版文本中搜索关键词
+        const oldText = paraDiff.oldParagraph?.text || '';
+        const combinedText = relevantText + ' ' + oldText;
 
         for (const rule of RULES) {
           // 检查变更类型是否匹配
           if (!rule.changeTypes.includes(paraDiff.changeType)) continue;
 
-          // 关键词快速预过滤
-          const hasKeyword = rule.keywords.some(kw => relevantText.includes(kw));
+          // 关键词快速预过滤（同时检查新旧文本）
+          const hasKeyword = rule.keywords.some(kw => combinedText.includes(kw));
           if (!hasKeyword) continue;
 
           // 正则模式确认
@@ -421,7 +424,7 @@ const NegotiationAdvisor = (() => {
 
           // 生成建议
           const suggestionText = rule.generate(paraDiff, context);
-          const detectedKeywords = rule.keywords.filter(kw => relevantText.includes(kw));
+          const detectedKeywords = rule.keywords.filter(kw => combinedText.includes(kw));
 
           suggestions.push({
             id: 'sug_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 5),

@@ -443,6 +443,43 @@ const TextParser = (() => {
       oldSections.forEach(s => oldSectionMap.set(s.id, s));
     }
 
+    // 预处理：构建新段落全局索引（用于跨章节/跨段落搜索）
+    const allNewParas = [];
+    newSections.forEach(s => {
+      s.paragraphs.forEach(p => {
+        allNewParas.push({ sectionId: s.id, sectionTitle: s.title, paraIndex: p.index, text: p.text });
+      });
+    });
+
+    // 预处理：构建旧段落内容哈希 → 新段落的映射（处理拆分/合并/重排）
+    const oldParaContentMap = new Map();
+    if (oldSections) {
+      oldSections.forEach(s => {
+        s.paragraphs.forEach(p => {
+          oldParaContentMap.set(`${s.id}_${p.index}`, p.text);
+        });
+      });
+    }
+
+    // 辅助函数：简单字符双字相似度（内联版本，避免依赖外部模块）
+    function quickSimilarity(textA, textB) {
+      if (!textA && !textB) return 1;
+      if (!textA || !textB) return 0;
+      if (textA === textB) return 1;
+      const bigramsA = new Set();
+      const cleanA = textA.replace(/\s+/g, '');
+      for (let i = 0; i < cleanA.length - 1; i++) bigramsA.add(cleanA.substring(i, i + 2));
+      if (cleanA.length === 1) bigramsA.add(cleanA);
+      const bigramsB = new Set();
+      const cleanB = textB.replace(/\s+/g, '');
+      for (let i = 0; i < cleanB.length - 1; i++) bigramsB.add(cleanB.substring(i, i + 2));
+      if (cleanB.length === 1) bigramsB.add(cleanB);
+      let intersection = 0;
+      bigramsA.forEach(bg => { if (bigramsB.has(bg)) intersection++; });
+      const union = bigramsA.size + bigramsB.size - intersection;
+      return union === 0 ? 0 : intersection / union;
+    }
+
     for (const ann of oldAnnotations) {
       let targetSection = null;
       let targetPara = null;
@@ -489,6 +526,43 @@ const TextParser = (() => {
         }
       }
 
+      // 策略3.5：通过旧段落内容相似度在全局新段落中匹配（处理拆分/合并/重排）
+      if (!targetSection) {
+        const oldParaText = oldParaContentMap.get(`${ann.sectionId}_${ann.paragraphIndex}`);
+        if (oldParaText && ann.anchorText) {
+          let bestMatch = null;
+          let bestSim = 0;
+          for (const np of allNewParas) {
+            // 快速预过滤：锚点文本必须在新段落中存在
+            if (!np.text.includes(ann.anchorText)) continue;
+            const sim = quickSimilarity(oldParaText, np.text);
+            if (sim > bestSim && sim >= 0.3) {
+              bestSim = sim;
+              bestMatch = np;
+            }
+          }
+          if (bestMatch) {
+            targetSection = newSections.find(s => s.id === bestMatch.sectionId);
+            if (targetSection) {
+              targetPara = targetSection.paragraphs.find(p => p.index === bestMatch.paraIndex);
+              if (targetPara) {
+                const idx = findAnchorInParagraph(targetPara.text, ann.anchorText, ann._context, -1);
+                if (idx >= 0) {
+                  newStart = idx;
+                  newEnd = idx + ann.anchorText.length;
+                  newParaIndex = targetPara.index;
+                  corrected = true;
+                } else {
+                  // 相似度匹配了但锚点找不到，重置
+                  targetSection = null;
+                  targetPara = null;
+                }
+              }
+            }
+          }
+        }
+      }
+
       // 策略4：全局搜索锚点文本（最后手段）
       if (!targetSection) {
         for (const section of newSections) {
@@ -507,6 +581,91 @@ const TextParser = (() => {
             }
           }
           if (targetSection) break;
+        }
+      }
+
+      // 策略5：跨段落边界搜索（处理段落拆分场景）
+      if (!targetSection && ann.anchorText) {
+        for (const section of newSections) {
+          const paras = section.paragraphs;
+          for (let pi = 0; pi < paras.length - 1; pi++) {
+            const joined = paras[pi].text + '\n' + paras[pi + 1].text;
+            const idx = joined.indexOf(ann.anchorText);
+            if (idx >= 0) {
+              targetSection = section;
+              // 锚点落在哪个段落中：判断是否跨越了拼接点
+              const splitPoint = paras[pi].text.length;
+              if (idx + ann.anchorText.length <= splitPoint) {
+                // 完全在第一个段落中
+                targetPara = paras[pi];
+                newStart = idx;
+              } else if (idx >= splitPoint + 1) {
+                // 完全在第二个段落中（跳过换行符）
+                targetPara = paras[pi + 1];
+                newStart = idx - splitPoint - 1;
+              } else {
+                // 跨越两个段落边界 — 取包含更多内容的那个段落
+                const inFirst = splitPoint - idx;
+                const inSecond = ann.anchorText.length - inFirst;
+                if (inFirst >= inSecond) {
+                  targetPara = paras[pi];
+                  // 锚点文本被截断，使用第一个段落中的部分作为新锚点
+                  const partialAnchor = ann.anchorText.substring(0, inFirst);
+                  newStart = idx;
+                  newEnd = idx + partialAnchor.length;
+                  newParaIndex = paras[pi].index;
+                  corrected = true;
+                  break;
+                } else {
+                  targetPara = paras[pi + 1];
+                  const partialAnchor = ann.anchorText.substring(inFirst);
+                  newStart = 0;
+                  newEnd = partialAnchor.length;
+                  newParaIndex = paras[pi + 1].index;
+                  corrected = true;
+                  break;
+                }
+              }
+              if (targetPara) {
+                newEnd = newStart + ann.anchorText.length;
+                newParaIndex = targetPara.index;
+                corrected = true;
+              }
+              break;
+            }
+          }
+          if (targetSection) break;
+        }
+      }
+
+      // 策略6：通过旧段落内容相似度全局模糊定位（锚点文本可能微调）
+      if (!targetSection) {
+        const oldParaText = oldParaContentMap.get(`${ann.sectionId}_${ann.paragraphIndex}`);
+        if (oldParaText) {
+          let bestMatch = null;
+          let bestSim = 0;
+          for (const np of allNewParas) {
+            const sim = quickSimilarity(oldParaText, np.text);
+            if (sim > bestSim && sim >= 0.5) {
+              bestSim = sim;
+              bestMatch = np;
+            }
+          }
+          if (bestMatch) {
+            const matchSection = newSections.find(s => s.id === bestMatch.sectionId);
+            const matchPara = matchSection ? matchSection.paragraphs.find(p => p.index === bestMatch.paraIndex) : null;
+            if (matchPara) {
+              const idx = findAnchorInParagraph(matchPara.text, ann.anchorText, ann._context, -1);
+              if (idx >= 0) {
+                targetSection = matchSection;
+                targetPara = matchPara;
+                newStart = idx;
+                newEnd = idx + ann.anchorText.length;
+                newParaIndex = matchPara.index;
+                corrected = true;
+              }
+            }
+          }
         }
       }
 
@@ -555,6 +714,7 @@ const TextParser = (() => {
       }
 
       // 验证锚点文本
+      let alreadyCounted = false;
       if (!corrected) {
         newParaIndex = targetPara.index;
 
@@ -575,6 +735,7 @@ const TextParser = (() => {
               newEnd = idx + ann.anchorText.length;
               corrected = true;
               results.stats.corrected++;
+              alreadyCounted = true;
             } else {
               results.invalidated.push({
                 ...ann,
@@ -595,6 +756,7 @@ const TextParser = (() => {
             newEnd = idx + ann.anchorText.length;
             corrected = true;
             results.stats.corrected++;
+            alreadyCounted = true;
           } else {
             results.invalidated.push({
               ...ann,
@@ -608,6 +770,10 @@ const TextParser = (() => {
       }
 
       // 迁移成功，更新批注
+      if (corrected && !alreadyCounted) {
+        results.stats.corrected++;
+      }
+
       const migratedAnn = {
         ...ann,
         sectionId: targetSection.id,

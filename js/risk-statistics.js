@@ -8,8 +8,13 @@ const RiskStatistics = (() => {
    * 计算统计数据
    */
   function computeStats(annotations) {
+    // 过滤掉已失效批注，仅统计有效批注
+    const activeAnnotations = annotations.filter(a => a.status !== 'invalidated');
+    const invalidatedCount = annotations.length - activeAnnotations.length;
+
     const stats = {
-      total: annotations.length,
+      total: activeAnnotations.length,
+      invalidatedCount: invalidatedCount,
       byType: {},
       byLevel: { high: 0, medium: 0, low: 0 },
       byStatus: {},
@@ -27,7 +32,8 @@ const RiskStatistics = (() => {
       stats.byStatus[status] = 0;
     });
 
-    annotations.forEach(ann => {
+    // 仅统计有效批注的风险分布
+    activeAnnotations.forEach(ann => {
       if (stats.byType[ann.riskType] !== undefined) {
         stats.byType[ann.riskType]++;
       }
@@ -41,6 +47,9 @@ const RiskStatistics = (() => {
         stats.byTypeAndLevel[ann.riskType][ann.riskLevel]++;
       }
     });
+
+    // 单独记录已失效批注的状态计数
+    stats.byStatus['invalidated'] = invalidatedCount;
 
     return stats;
   }

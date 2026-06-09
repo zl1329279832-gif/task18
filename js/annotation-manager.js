@@ -293,6 +293,41 @@ const AnnotationManager = (() => {
     const oldAnnotations = [...annotations];
     const result = TextParser.migrateAnnotations(oldAnnotations, newSections, oldSections);
 
+    const now = new Date().toISOString();
+
+    // 为失效批注补充 history 记录和时间戳
+    result.invalidated.forEach(ann => {
+      if (!ann.history) ann.history = [];
+      ann.history.push({
+        action: 'invalidated',
+        from: ann._previousStatus || 'pending',
+        to: 'invalidated',
+        reason: ann._invalidReason || '文本重新解析后无法定位',
+        time: now
+      });
+      ann._previousStatus = undefined;
+      ann.updatedAt = now;
+    });
+
+    // 为成功迁移且位置发生变化的批注补充 history 记录
+    result.migrated.forEach(ann => {
+      const oldAnn = oldAnnotations.find(a => a.id === ann.id);
+      if (!oldAnn) return;
+      if (!ann.history) ann.history = [];
+      const sectionChanged = oldAnn.sectionId !== ann.sectionId;
+      const paraChanged = oldAnn.paragraphIndex !== ann.paragraphIndex;
+      const offsetChanged = oldAnn.startOffset !== ann.startOffset || oldAnn.endOffset !== ann.endOffset;
+      if (sectionChanged || paraChanged || offsetChanged) {
+        ann.history.push({
+          action: 'migrated',
+          from: { sectionId: oldAnn.sectionId, paragraphIndex: oldAnn.paragraphIndex, startOffset: oldAnn.startOffset },
+          to: { sectionId: ann.sectionId, paragraphIndex: ann.paragraphIndex, startOffset: ann.startOffset },
+          time: now
+        });
+        ann.updatedAt = now;
+      }
+    });
+
     // 合并迁移结果（保留失效批注）
     const allMigrated = [...result.migrated, ...result.invalidated];
 

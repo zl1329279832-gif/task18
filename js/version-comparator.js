@@ -312,7 +312,7 @@ const VersionComparator = (() => {
       }
     }
 
-    // 处理剩余位置对齐（未匹配的中间段落按位置尝试匹配）
+    // 处理剩余位置对齐（未匹配的中间段落按位置尝试匹配，放宽距离）
     for (let i = 0; i < oldSections.length; i++) {
       if (oldUsed.has(i)) continue;
       // 找位置最近的未使用新章节
@@ -325,7 +325,7 @@ const VersionComparator = (() => {
           bestJ = j;
         }
       }
-      if (bestJ >= 0 && bestDist <= 2) {
+      if (bestJ >= 0 && bestDist <= 4) {
         const sim = computeSimilarity(
           oldSections[i].paragraphs.map(p => p.text).join(''),
           newSections[bestJ].paragraphs.map(p => p.text).join('')
@@ -335,6 +335,59 @@ const VersionComparator = (() => {
           oldUsed.add(i);
           newUsed.add(bestJ);
         }
+      }
+    }
+
+    // 第四轮：全局内容相似度匹配（处理大范围重排）
+    for (let i = 0; i < oldSections.length; i++) {
+      if (oldUsed.has(i)) continue;
+      const oldContent = oldSections[i].paragraphs.map(p => p.text).join('');
+      let bestJ = -1, bestSim = 0;
+      for (let j = 0; j < newSections.length; j++) {
+        if (newUsed.has(j)) continue;
+        const newContent = newSections[j].paragraphs.map(p => p.text).join('');
+        const sim = computeSimilarity(oldContent, newContent);
+        if (sim > bestSim && sim >= 0.4) {
+          bestSim = sim;
+          bestJ = j;
+        }
+      }
+      if (bestJ >= 0) {
+        pairs.push({ oldIdx: i, newIdx: bestJ, sim: bestSim });
+        oldUsed.add(i);
+        newUsed.add(bestJ);
+      }
+    }
+
+    // 第五轮：拆分检测 — 一个旧章节的内容分散到多个新章节
+    // 对未匹配的旧章节，检查其段落是否存在于已匹配或未匹配的新章节中
+    for (let i = 0; i < oldSections.length; i++) {
+      if (oldUsed.has(i)) continue;
+      const oldContent = oldSections[i].paragraphs.map(p => p.text).join('');
+      // 在所有未匹配的新章节中，找包含旧章节部分段落内容的最佳候选
+      let bestJ = -1, bestSim = 0;
+      for (let j = 0; j < newSections.length; j++) {
+        if (newUsed.has(j)) continue;
+        // 检查旧章节的段落是否出现在新章节中
+        let matchedParas = 0;
+        for (const oldPara of oldSections[i].paragraphs) {
+          for (const newPara of newSections[j].paragraphs) {
+            const pSim = computeSimilarity(oldPara.text, newPara.text);
+            if (pSim >= 0.5) { matchedParas++; break; }
+          }
+        }
+        const coverage = oldSections[i].paragraphs.length > 0
+          ? matchedParas / oldSections[i].paragraphs.length
+          : 0;
+        if (coverage > bestSim && coverage >= 0.2) {
+          bestSim = coverage;
+          bestJ = j;
+        }
+      }
+      if (bestJ >= 0) {
+        pairs.push({ oldIdx: i, newIdx: bestJ, sim: bestSim, _splitDetected: true });
+        oldUsed.add(i);
+        newUsed.add(bestJ);
       }
     }
 

@@ -10,8 +10,10 @@ const ComparisonExporter = (() => {
    * @param {Suggestion[]} suggestions
    * @param {RiskDelta[]} riskDeltas
    * @param {object} migrationStats
+   * @param {Annotation[]} oldAnnotations - 旧版批注
+   * @param {Annotation[]} newAnnotations - 迁移后批注
    */
-  function exportComparisonReport(diffResult, suggestions, riskDeltas, migrationStats) {
+  function exportComparisonReport(diffResult, suggestions, riskDeltas, migrationStats, oldAnnotations, newAnnotations) {
     const now = new Date();
     const timestamp = now.toLocaleString('zh-CN');
     const fileTimestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
@@ -72,9 +74,10 @@ const ComparisonExporter = (() => {
   </div>
 
   ${buildRiskDeltaSection(riskDeltas)}
-  ${buildComparisonTable(diffResult)}
+  ${buildComparisonTable(diffResult, oldAnnotations, newAnnotations)}
+  ${buildAnnotationThreadsSection(oldAnnotations, newAnnotations)}
   ${buildSuggestionsSection(suggestions)}
-  ${buildMigrationSection(migrationStats)}
+  ${buildMigrationSection(migrationStats, oldAnnotations, newAnnotations)}
 
   <div style="margin-top:32px;padding-top:16px;border-top:1px solid #eee;font-size:12px;color:#999">
     本报告由合同评审系统自动生成，仅供参考。
@@ -99,8 +102,10 @@ const ComparisonExporter = (() => {
     return html;
   }
 
-  function buildComparisonTable(diffResult) {
+  function buildComparisonTable(diffResult, oldAnnotations, newAnnotations) {
     let html = '<h2>条款对照</h2>';
+    const safeOldAnns = oldAnnotations || [];
+    const safeNewAnns = newAnnotations || [];
 
     for (const sectionDiff of diffResult.sectionDiffs) {
       const title = sectionDiff.newSection?.title || sectionDiff.oldSection?.title || '未知章节';
@@ -125,6 +130,29 @@ const ComparisonExporter = (() => {
           : '<span class="diff-placeholder">无对应内容</span>';
 
         html += `<tr class="${rowClass}"><td>${leftContent}</td><td>${rightContent}</td></tr>`;
+
+        // 显示该段落关联的旧版批注
+        const oldSectionId = sectionDiff.oldSection?.id;
+        const oldParaIdx = paraDiff.oldParagraph?.index;
+        if (oldSectionId !== undefined && oldParaIdx !== undefined) {
+          const paraAnns = safeOldAnns.filter(a =>
+            a.sectionId === oldSectionId && a.paragraphIndex === oldParaIdx && a.status !== 'invalidated'
+          );
+          if (paraAnns.length > 0) {
+            html += `<tr class="annotation-row"><td colspan="2" style="background:#fff8e1;border-left:3px solid #f39c12;font-size:12px;padding:6px 12px">`;
+            paraAnns.forEach(ann => {
+              html += `<div style="margin:2px 0"><span style="background:#f39c12;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px;margin-right:4px">${escapeHTML(ann.riskType)}</span>`;
+              html += `<span style="color:#666">${escapeHTML(ann.anchorText ? ann.anchorText.substring(0, 40) : '')}</span>`;
+              if (ann.comment) html += ` — <span style="color:#333">${escapeHTML(ann.comment)}</span>`;
+              // 评论线程（历史记录）
+              if (ann.history && ann.history.length > 1) {
+                html += ` <span style="color:#999;font-size:11px">(${ann.history.length - 1}条操作记录)</span>`;
+              }
+              html += `</div>`;
+            });
+            html += `</td></tr>`;
+          }
+        }
       }
 
       html += '</tbody></table>';
@@ -152,17 +180,114 @@ const ComparisonExporter = (() => {
     return html;
   }
 
-  function buildMigrationSection(migrationStats) {
+  function buildMigrationSection(migrationStats, oldAnnotations, newAnnotations) {
     if (!migrationStats || migrationStats.total === 0) return '';
+    const safeOldAnns = oldAnnotations || [];
+    const safeNewAnns = newAnnotations || [];
 
-    return `
+    // 识别失效批注（在旧版中存在但在新版迁移结果中标记为 invalidated 的）
+    const invalidatedAnns = safeOldAnns.filter(a => a.status === 'invalidated');
+
+    let html = `
       <h2>批注迁移结果</h2>
       <table>
         <tr><th>总批注数</th><td>${migrationStats.total}</td></tr>
         <tr><th>成功迁移</th><td>${migrationStats.migrated || 0}</td></tr>
-        <tr><th>已失效</th><td>${migrationStats.invalidated || 0}</td></tr>
+        <tr><th>已失效</th><td style="color:#e74c3c;font-weight:bold">${migrationStats.invalidated || 0}</td></tr>
       </table>
     `;
+
+    // 显示失效批注的详细信息和失效原因
+    if (invalidatedAnns.length > 0) {
+      html += `<h3 style="margin-top:16px;color:#e74c3c">失效批注详情</h3>
+        <table>
+          <thead><tr><th>锚点文本</th><th>风险类型</th><th>批注说明</th><th>失效原因</th></tr></thead>
+          <tbody>`;
+      invalidatedAnns.forEach(ann => {
+        html += `<tr style="color:#999;text-decoration:line-through">
+          <td style="text-decoration:line-through">${escapeHTML((ann.anchorText || '').substring(0, 40))}</td>
+          <td>${escapeHTML(ann.riskType || '')}</td>
+          <td>${escapeHTML(ann.comment || '无')}</td>
+          <td style="text-decoration:none;color:#e74c3c">${escapeHTML(ann._invalidReason || '无法定位')}</td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+    }
+
+    // 显示成功迁移但位置发生变化的批注
+    const migratedAnns = safeNewAnns.filter(a => {
+      if (a.status === 'invalidated') return false;
+      return a.history && a.history.some(h => h.action === 'migrated');
+    });
+    if (migratedAnns.length > 0) {
+      html += `<h3 style="margin-top:16px;color:#f39c12">位置修正批注</h3>
+        <table>
+          <thead><tr><th>锚点文本</th><th>风险类型</th><th>原位置</th><th>新位置</th></tr></thead>
+          <tbody>`;
+      migratedAnns.forEach(ann => {
+        const migRecord = ann.history.find(h => h.action === 'migrated');
+        const fromStr = migRecord && migRecord.from ? `段落${migRecord.from.paragraphIndex}` : '—';
+        const toStr = migRecord && migRecord.to ? `段落${migRecord.to.paragraphIndex}` : '—';
+        html += `<tr>
+          <td>${escapeHTML((ann.anchorText || '').substring(0, 40))}</td>
+          <td>${escapeHTML(ann.riskType || '')}</td>
+          <td>${fromStr}</td>
+          <td>${toStr}</td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+    }
+
+    return html;
+  }
+
+  /**
+   * 构建评论线程区块（完整的批注操作历史）
+   */
+  function buildAnnotationThreadsSection(oldAnnotations, newAnnotations) {
+    const safeOldAnns = oldAnnotations || [];
+    const safeNewAnns = newAnnotations || [];
+    // 合并去重：以 id 为键取最新版本
+    const annMap = new Map();
+    safeOldAnns.forEach(a => annMap.set(a.id, a));
+    safeNewAnns.forEach(a => annMap.set(a.id, a));
+    const allAnns = Array.from(annMap.values());
+
+    // 只显示有评论或有操作历史的批注
+    const annsWithThreads = allAnns.filter(a =>
+      (a.comment && a.comment.trim()) || (a.history && a.history.length > 1)
+    );
+    if (annsWithThreads.length === 0) return '';
+
+    let html = '<h2>评论线程</h2>';
+    annsWithThreads.forEach(ann => {
+      const isInvalidated = ann.status === 'invalidated';
+      const statusStyle = isInvalidated ? 'color:#999;text-decoration:line-through' : '';
+      html += `<div class="suggestion" style="border-color:#3498db;background:#f8f9fa;${statusStyle}">`;
+      html += `<div class="sug-title" style="text-decoration:none">${escapeHTML((ann.anchorText || '').substring(0, 50))}`;
+      if (isInvalidated) html += ` <span style="color:#e74c3c;font-size:11px;text-decoration:none">[已失效]</span>`;
+      html += `</div>`;
+      if (ann.comment) {
+        html += `<div class="sug-text" style="text-decoration:none;margin:4px 0">${escapeHTML(ann.comment)}</div>`;
+      }
+      // 操作历史时间线
+      if (ann.history && ann.history.length > 0) {
+        html += `<div style="text-decoration:none;margin-top:8px;font-size:11px;color:#7f8c8d;border-top:1px solid #eee;padding-top:6px">`;
+        ann.history.forEach(h => {
+          const timeStr = h.time ? new Date(h.time).toLocaleString('zh-CN') : '';
+          let actionLabel = h.action;
+          if (h.action === 'created') actionLabel = '创建';
+          else if (h.action === 'status_change') actionLabel = `状态: ${h.from || ''} → ${h.to || ''}`;
+          else if (h.action === 'invalidated') actionLabel = `失效: ${h.reason || ''}`;
+          else if (h.action === 'migrated') actionLabel = '位置迁移';
+          html += `<div>${timeStr} — ${escapeHTML(actionLabel)}</div>`;
+        });
+        html += `</div>`;
+      }
+      html += `</div>`;
+    });
+
+    return html;
   }
 
   // ==================== 辅助函数 ====================
