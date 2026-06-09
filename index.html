@@ -33,6 +33,13 @@
       </div>
     </div>
     <div class="toolbar-right">
+      <button class="btn btn-secondary" id="compareBtn" disabled title="版本对比">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="2" y="3" width="8" height="18" rx="1"/><rect x="14" y="3" width="8" height="18" rx="1"/>
+          <path d="M10 12h4"/>
+        </svg>
+        版本对比
+      </button>
       <label class="btn btn-primary" id="importBtn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -177,7 +184,37 @@
     </aside>
   </main>
 
-  <!-- 底部：风险统计 -->
+  <!-- 对比视图（版本对比模式） -->
+  <main class="comparison-layout" id="comparisonLayout" style="display:none">
+    <div class="comparison-header">
+      <div class="comparison-title-left">
+        <span id="originalVersionLabel">原始版本</span>
+      </div>
+      <div class="comparison-controls">
+        <button class="btn-sm" id="prevChangeBtn" title="上一处变更">&laquo; 上一处</button>
+        <span id="changeCounter">0/0</span>
+        <button class="btn-sm" id="nextChangeBtn" title="下一处变更">下一处 &raquo;</button>
+        <button class="btn-sm btn-primary" id="applyMigrationBtn">迁移批注</button>
+        <button class="btn-sm" id="exportComparisonBtn">导出对比报告</button>
+        <button class="btn-sm btn-ghost" id="exitCompareBtn">退出对比</button>
+      </div>
+      <div class="comparison-title-right">
+        <span id="revisedVersionLabel">修订版本</span>
+      </div>
+    </div>
+    <div class="comparison-panels">
+      <div class="comparison-panel-left" id="comparisonLeft"></div>
+      <div class="comparison-panel-right" id="comparisonRight"></div>
+    </div>
+    <div class="change-detail-panel" id="changeDetailPanel" style="display:none">
+      <div class="detail-header">
+        <h4 id="detailTitle">变更详情</h4>
+        <button class="btn-sm btn-ghost" id="closeDetailBtn">&times;</button>
+      </div>
+      <div class="detail-body" id="detailBody"></div>
+      <div class="suggestion-body" id="suggestionBody"></div>
+    </div>
+  </main>
   <footer class="stats-panel" id="statsPanel">
     <div class="stats-header">
       <h3>风险统计</h3>
@@ -185,6 +222,7 @@
         <button class="tab-btn active" data-tab="chart">图表</button>
         <button class="tab-btn" data-tab="checklist">评审清单</button>
         <button class="tab-btn" data-tab="validation">定位检查</button>
+        <button class="tab-btn" data-tab="changes" id="tabBtnChanges" style="display:none">变更分析</button>
       </div>
     </div>
     <div class="stats-content">
@@ -212,6 +250,11 @@
       <div class="tab-content" id="tabValidation">
         <div id="validationContent">
           <p class="empty-hint">导入合同并添加批注后可进行定位检查</p>
+        </div>
+      </div>
+      <div class="tab-content" id="tabChanges">
+        <div id="changesContent">
+          <p class="empty-hint">请先进行版本对比</p>
         </div>
       </div>
     </div>
@@ -271,12 +314,43 @@
     </div>
   </div>
 
+  <!-- 版本对比上传弹窗 -->
+  <div class="modal-overlay" id="compareModalOverlay" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>版本对比</h3>
+        <button class="modal-close" id="compareModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>将当前已加载的合同作为<strong>原始版本</strong>，请上传<strong>修订版本</strong>进行对比分析。</p>
+        <label class="compare-upload-area" id="compareUploadArea">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <p>点击选择或拖拽修订版合同文件</p>
+          <p style="font-size:11px;color:#999">支持 .txt / .html 格式</p>
+          <input type="file" id="revisedFileInput" accept=".txt,.html,.htm" style="display:none">
+        </label>
+        <div id="compareStatus"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="compareModalCancel">取消</button>
+      </div>
+    </div>
+  </div>
+
   <script src="js/file-reader.js"></script>
   <script src="js/text-parser.js"></script>
   <script src="js/annotation-manager.js"></script>
   <script src="js/annotation-renderer.js"></script>
   <script src="js/risk-statistics.js"></script>
   <script src="js/report-exporter.js"></script>
+  <script src="js/diff-engine.js"></script>
+  <script src="js/change-analyzer.js"></script>
+  <script src="js/comparison-renderer.js"></script>
+  <script src="js/comparison-reporter.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

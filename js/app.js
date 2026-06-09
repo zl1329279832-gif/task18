@@ -8,7 +8,14 @@ const App = (() => {
   let state = {
     sections: [],
     contractTitle: '',
-    fileLoaded: false
+    fileLoaded: false,
+    // 对比模式状态
+    comparisonMode: false,
+    revisedSections: null,
+    revisedTitle: '',
+    diffResult: null,
+    analysisResult: null,
+    migrationResults: null
   };
 
   // DOM引用缓存
@@ -94,7 +101,22 @@ const App = (() => {
       editComment: document.getElementById('editComment'),
       editSaveBtn: document.getElementById('editSaveBtn'),
       editCancelBtn: document.getElementById('editCancelBtn'),
-      editModalClose: document.getElementById('editModalClose')
+      editModalClose: document.getElementById('editModalClose'),
+      // 对比模式 DOM
+      compareBtn: document.getElementById('compareBtn'),
+      comparisonLayout: document.getElementById('comparisonLayout'),
+      mainLayout: document.querySelector('.main-layout'),
+      compareModalOverlay: document.getElementById('compareModalOverlay'),
+      compareModalClose: document.getElementById('compareModalClose'),
+      compareModalCancel: document.getElementById('compareModalCancel'),
+      compareUploadArea: document.getElementById('compareUploadArea'),
+      revisedFileInput: document.getElementById('revisedFileInput'),
+      compareStatus: document.getElementById('compareStatus'),
+      exitCompareBtn: document.getElementById('exitCompareBtn'),
+      applyMigrationBtn: document.getElementById('applyMigrationBtn'),
+      exportComparisonBtn: document.getElementById('exportComparisonBtn'),
+      tabBtnChanges: document.getElementById('tabBtnChanges'),
+      changesContent: document.getElementById('changesContent')
     };
   }
 
@@ -192,6 +214,18 @@ const App = (() => {
     DOM.editModalOverlay.addEventListener('click', (e) => {
       if (e.target === DOM.editModalOverlay) DOM.editModalOverlay.style.display = 'none';
     });
+
+    // 对比模式事件
+    DOM.compareBtn.addEventListener('click', handleCompareClick);
+    DOM.revisedFileInput.addEventListener('change', handleRevisedFileImport);
+    DOM.compareModalClose.addEventListener('click', () => { DOM.compareModalOverlay.style.display = 'none'; });
+    DOM.compareModalCancel.addEventListener('click', () => { DOM.compareModalOverlay.style.display = 'none'; });
+    DOM.compareModalOverlay.addEventListener('click', (e) => {
+      if (e.target === DOM.compareModalOverlay) DOM.compareModalOverlay.style.display = 'none';
+    });
+    DOM.exitCompareBtn.addEventListener('click', exitComparisonMode);
+    DOM.applyMigrationBtn.addEventListener('click', handleApplyMigration);
+    DOM.exportComparisonBtn.addEventListener('click', handleExportComparison);
   }
 
   /**
@@ -865,6 +899,225 @@ const App = (() => {
     RiskStatistics.renderValidationResults(results, DOM.validationContent);
   }
 
+  // ==================== 版本对比功能 ====================
+
+  /**
+   * 点击"版本对比"按钮
+   */
+  function handleCompareClick() {
+    if (!state.fileLoaded) {
+      showToast('请先导入合同文件', 'warning');
+      return;
+    }
+    DOM.compareStatus.textContent = '';
+    DOM.compareStatus.className = '';
+    DOM.compareModalOverlay.style.display = 'flex';
+  }
+
+  /**
+   * 处理修订版文件上传
+   */
+  async function handleRevisedFileImport(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    try {
+      DOM.compareStatus.textContent = '正在读取修订版文件...';
+      DOM.compareStatus.className = 'loading';
+
+      const result = await FileReader.readFile(file);
+      DOM.compareStatus.textContent = '正在解析并分析变更...';
+
+      // 解析修订版
+      state.revisedSections = TextParser.parseSections(result.content, result.type);
+      state.revisedTitle = file.name.replace(/\.\w+$/, '');
+
+      // 执行diff
+      state.diffResult = DiffEngine.compare(state.sections, state.revisedSections);
+
+      // 执行变更分析
+      state.analysisResult = ChangeAnalyzer.analyze(
+        state.diffResult, state.sections, state.revisedSections
+      );
+
+      // 批注迁移预览
+      const annotations = AnnotationManager.getAllAnnotations();
+      if (annotations.length > 0) {
+        state.migrationResults = ChangeAnalyzer.migrateAnnotationsForComparison(
+          annotations, state.sections, state.revisedSections
+        );
+      } else {
+        state.migrationResults = [];
+      }
+
+      DOM.compareStatus.textContent = `分析完成：检测到 ${state.analysisResult.riskSummary.totalChanges} 处变更，${state.analysisResult.suggestions.length} 条谈判建议`;
+      DOM.compareStatus.className = 'success';
+
+      // 关闭弹窗，进入对比模式
+      setTimeout(() => {
+        DOM.compareModalOverlay.style.display = 'none';
+        enterComparisonMode();
+      }, 800);
+
+    } catch (err) {
+      DOM.compareStatus.textContent = '文件解析失败: ' + err.message;
+      DOM.compareStatus.className = 'error';
+    }
+
+    e.target.value = '';
+  }
+
+  /**
+   * 进入对比模式
+   */
+  function enterComparisonMode() {
+    state.comparisonMode = true;
+
+    // 隐藏标准布局，显示对比布局
+    DOM.mainLayout.style.display = 'none';
+    DOM.comparisonLayout.style.display = 'flex';
+
+    // 初始化对比渲染器
+    ComparisonRenderer.init();
+
+    // 设置版本标签
+    document.getElementById('originalVersionLabel').textContent = state.contractTitle || '原始版本';
+    document.getElementById('revisedVersionLabel').textContent = state.revisedTitle || '修订版本';
+
+    // 渲染对比视图
+    ComparisonRenderer.renderComparison(
+      state.diffResult, state.analysisResult,
+      state.sections, state.revisedSections
+    );
+
+    // 显示变更分析标签页
+    DOM.tabBtnChanges.style.display = '';
+
+    // 如果有迁移结果，渲染迁移状态
+    if (state.migrationResults && state.migrationResults.length > 0) {
+      const migrationHTML = ComparisonRenderer.renderMigrationStatus(state.migrationResults);
+      // 追加到变更分析面板
+      if (DOM.changesContent) {
+        DOM.changesContent.insertAdjacentHTML('beforeend', migrationHTML);
+      }
+    }
+
+    showToast(`已进入对比模式：${state.analysisResult.riskSummary.totalChanges} 处变更`, 'info');
+  }
+
+  /**
+   * 退出对比模式
+   */
+  function exitComparisonMode() {
+    state.comparisonMode = false;
+
+    // 清理对比渲染器
+    ComparisonRenderer.destroy();
+
+    // 恢复标准布局
+    DOM.comparisonLayout.style.display = 'none';
+    DOM.mainLayout.style.display = '';
+
+    // 隐藏变更分析标签页
+    DOM.tabBtnChanges.style.display = 'none';
+
+    // 如果变更分析标签页是激活的，切回图表
+    if (DOM.tabBtnChanges.classList.contains('active')) {
+      DOM.tabBtnChanges.classList.remove('active');
+      document.getElementById('tabChanges').classList.remove('active');
+      document.querySelector('.tab-btn[data-tab="chart"]').classList.add('active');
+      document.getElementById('tabChart').classList.add('active');
+    }
+
+    // 清理对比状态（保留数据以支持重新进入）
+    showToast('已退出对比模式', 'info');
+  }
+
+  /**
+   * 应用批注迁移到修订版
+   */
+  function handleApplyMigration() {
+    if (!state.revisedSections || !state.migrationResults) {
+      showToast('暂无可迁移的批注', 'warning');
+      return;
+    }
+
+    // 显示确认对话框
+    DOM.modalTitle.textContent = '应用批注迁移';
+
+    const migrated = state.migrationResults.filter(r => r.status === 'migrated').length;
+    const adjusted = state.migrationResults.filter(r => r.status === 'adjusted').length;
+    const invalidated = state.migrationResults.filter(r => r.status === 'invalidated').length;
+
+    DOM.modalBody.innerHTML = `
+      <p>将批注迁移到修订版本，并以修订版本替换当前合同：</p>
+      <div style="margin:12px 0;padding:10px;background:#f8f9fa;border-radius:4px;font-size:13px">
+        <div>精确迁移：<strong style="color:#27ae60">${migrated}</strong> 条</div>
+        <div>位置调整：<strong style="color:#f39c12">${adjusted}</strong> 条</div>
+        <div>已失效：<strong style="color:#e74c3c">${invalidated}</strong> 条</div>
+      </div>
+      <p style="color:#e67e22;font-size:12px">注意：此操作将用修订版替换当前合同，失效的批注将被标记。</p>
+    `;
+    DOM.modalFooter.innerHTML = '';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn btn-ghost';
+    cancelBtn.textContent = '取消';
+    cancelBtn.onclick = () => { DOM.modalOverlay.style.display = 'none'; };
+
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'btn btn-primary';
+    applyBtn.textContent = '确认迁移';
+    applyBtn.onclick = () => {
+      DOM.modalOverlay.style.display = 'none';
+      doApplyMigration();
+    };
+
+    DOM.modalFooter.appendChild(cancelBtn);
+    DOM.modalFooter.appendChild(applyBtn);
+    DOM.modalOverlay.style.display = 'flex';
+  }
+
+  /**
+   * 执行迁移
+   */
+  function doApplyMigration() {
+    // 用修订版替换当前合同
+    const oldSections = state.sections;
+    state.sections = state.revisedSections;
+    state.contractTitle = state.revisedTitle;
+
+    // 执行批注迁移
+    AnnotationManager.migrateToNewSections(state.sections, oldSections);
+
+    // 退出对比模式
+    exitComparisonMode();
+
+    // 重新渲染
+    renderContract();
+
+    showToast('批注迁移完成，当前合同已更新为修订版本', 'success');
+  }
+
+  /**
+   * 导出对比报告
+   */
+  function handleExportComparison() {
+    if (!state.diffResult || !state.analysisResult) {
+      showToast('暂无对比数据', 'warning');
+      return;
+    }
+
+    ComparisonReporter.exportComparisonReport(
+      state.diffResult,
+      state.analysisResult,
+      state.migrationResults || [],
+      state.contractTitle,
+      state.revisedTitle
+    );
+    showToast('对比报告导出成功', 'success');
+  }
+
   /**
    * 尝试自动加载
    */
@@ -896,6 +1149,7 @@ const App = (() => {
     DOM.saveBtn.disabled = !enabled;
     DOM.exportReportBtn.disabled = !enabled;
     DOM.exportProjectBtn.disabled = !enabled;
+    DOM.compareBtn.disabled = !enabled;
   }
 
   /**
