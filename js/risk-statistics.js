@@ -157,9 +157,12 @@ const RiskStatistics = (() => {
   }
 
   /**
-   * 生成评审清单 HTML
+   * 生成评审清单 HTML（排除已失效批注，在末尾展示失效区域）
    */
   function generateChecklist(annotations, sections) {
+    const activeAnnotations = annotations.filter(a => a.status !== 'invalidated');
+    const invalidatedAnnotations = annotations.filter(a => a.status === 'invalidated');
+
     if (annotations.length === 0) {
       return '<p class="checklist-empty">暂无批注，请先对合同条款进行标注。</p>';
     }
@@ -167,15 +170,15 @@ const RiskStatistics = (() => {
     let html = '<div class="checklist">';
     html += `<div class="checklist-header">
       <h3>合同评审清单</h3>
-      <p>共 ${annotations.length} 条批注 |
-        高风险 ${annotations.filter(a => a.riskLevel === 'high').length} 条 |
-        待处理 ${annotations.filter(a => a.status === 'pending' || a.status === 'reviewing').length} 条
+      <p>共 ${activeAnnotations.length} 条有效批注${invalidatedAnnotations.length > 0 ? ' | ' + invalidatedAnnotations.length + ' 条已失效' : ''} |
+        高风险 ${activeAnnotations.filter(a => a.riskLevel === 'high').length} 条 |
+        待处理 ${activeAnnotations.filter(a => a.status === 'pending' || a.status === 'reviewing').length} 条
       </p>
     </div>`;
 
-    // 按风险类型分组
+    // 按风险类型分组（仅有效批注）
     const grouped = {};
-    annotations.forEach(ann => {
+    activeAnnotations.forEach(ann => {
       if (!grouped[ann.riskType]) grouped[ann.riskType] = [];
       grouped[ann.riskType].push(ann);
     });
@@ -217,6 +220,39 @@ const RiskStatistics = (() => {
       html += '</tbody></table></div>';
     });
 
+    // 失效批注区域
+    if (invalidatedAnnotations.length > 0) {
+      html += `<div class="checklist-group" style="opacity:0.7">
+        <h4 style="color:#bdc3c7">⚠ 已失效批注 (${invalidatedAnnotations.length}条)</h4>
+        <table class="checklist-table">
+          <thead>
+            <tr>
+              <th>等级</th>
+              <th>章节</th>
+              <th>条款内容</th>
+              <th>批注</th>
+              <th>失效原因</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+      invalidatedAnnotations.forEach(ann => {
+        const section = sections.find(s => s.id === ann.sectionId);
+        const sectionTitle = section ? section.title : (ann._sectionTitle || '未知章节');
+        const levelInfo = AnnotationManager.RISK_LEVELS[ann.riskLevel];
+
+        html += `<tr style="text-decoration:line-through;color:#999">
+          <td><span class="badge" style="background:${levelInfo.color}">${levelInfo.label}</span></td>
+          <td>${AnnotationRenderer.escapeHTML(sectionTitle)}</td>
+          <td>${AnnotationRenderer.escapeHTML(truncate(ann.anchorText, 30))}</td>
+          <td>${AnnotationRenderer.escapeHTML(ann.comment || '无')}</td>
+          <td style="text-decoration:none;color:#e74c3c;font-size:12px">${AnnotationRenderer.escapeHTML(ann._invalidReason || '无法定位')}</td>
+        </tr>`;
+      });
+
+      html += '</tbody></table></div>';
+    }
+
     html += '</div>';
     return html;
   }
@@ -246,10 +282,14 @@ const RiskStatistics = (() => {
   }
 
   /**
-   * 渲染验证结果
+   * 渲染验证结果（增强：显示失效批注）
    */
   function renderValidationResults(results, container) {
-    if (results.invalid.length === 0 && results.corrected.length === 0) {
+    // 收集已失效的批注
+    const allAnnotations = AnnotationManager.getAllAnnotations();
+    const invalidatedAnns = allAnnotations.filter(a => a.status === 'invalidated');
+
+    if (results.invalid.length === 0 && results.corrected.length === 0 && invalidatedAnns.length === 0) {
       container.innerHTML = '<p class="validation-ok">所有批注定位正常</p>';
       return;
     }
@@ -269,6 +309,21 @@ const RiskStatistics = (() => {
       });
       html += '</ul></div>';
     }
+
+    // 显示已失效批注（来自迁移）
+    if (invalidatedAnns.length > 0) {
+      html += `<div class="validation-error" style="margin-top:12px">
+        <strong>${invalidatedAnns.length} 条批注因文本重新解析已失效：</strong>
+        <ul>`;
+      invalidatedAnns.forEach(ann => {
+        html += `<li style="text-decoration:line-through">${AnnotationRenderer.escapeHTML(truncate(ann.anchorText, 20))}
+          — <span style="text-decoration:none;color:#e74c3c">${AnnotationRenderer.escapeHTML(ann._invalidReason || '无法定位')}</span>
+          <button onclick="try{AnnotationManager.changeStatus('${ann.id}','reviewing');App.showToast('已恢复为评审中','success')}catch(e){}" style="text-decoration:none;font-size:11px;margin-left:8px;color:#3498db;cursor:pointer;border:none;background:none">恢复</button>
+        </li>`;
+      });
+      html += '</ul></div>';
+    }
+
     container.innerHTML = html;
   }
 

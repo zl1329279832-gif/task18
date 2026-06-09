@@ -1,6 +1,7 @@
 /**
  * app.js - 主控制器
  * 负责模块编排、事件绑定、状态同步
+ * 集成批注迁移（re-parse/project-import）、失效批注处理
  */
 const App = (() => {
   // 应用状态
@@ -34,6 +35,13 @@ const App = (() => {
 
     // 尝试自动加载 localStorage 数据
     tryAutoLoad();
+  }
+
+  /**
+   * 暴露章节数据（供 AnnotationManager 计算 rangeId）
+   */
+  function getSections() {
+    return state.sections;
   }
 
   /**
@@ -145,9 +153,15 @@ const App = (() => {
       btn.classList.add('active');
     });
 
-    // 筛选
-    DOM.filterRiskType.addEventListener('change', renderAnnotationList);
-    DOM.filterStatus.addEventListener('change', renderAnnotationList);
+    // 筛选（类型和状态变化都要刷新列表+高亮）
+    DOM.filterRiskType.addEventListener('change', () => {
+      renderAnnotationList();
+      AnnotationRenderer.refreshHighlights();
+    });
+    DOM.filterStatus.addEventListener('change', () => {
+      renderAnnotationList();
+      AnnotationRenderer.refreshHighlights();
+    });
 
     // 统计标签页
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -181,7 +195,39 @@ const App = (() => {
   }
 
   /**
-   * 处理文件导入
+   * 执行批注迁移并展示结果
+   * @param {Section[]} newSections - 新解析的章节
+   * @param {Section[]} oldSections - 旧章节
+   * @returns {boolean} 是否有批注需要迁移
+   */
+  function performMigration(newSections, oldSections) {
+    const existingAnnotations = AnnotationManager.getAllAnnotations();
+    if (existingAnnotations.length === 0) return false;
+
+    const result = AnnotationManager.migrateToNewSections(newSections, oldSections);
+    const stats = result.stats;
+
+    // 构建迁移结果提示
+    let message = '';
+    if (stats.total === 0) {
+      return false;
+    }
+
+    const parts = [];
+    if (stats.exactMatch > 0) parts.push(`${stats.exactMatch} 条精确匹配`);
+    if (stats.corrected > 0) parts.push(`${stats.corrected} 条已修正`);
+    if (stats.invalidated > 0) parts.push(`${stats.invalidated} 条已失效`);
+
+    if (parts.length > 0) {
+      message = `批注迁移完成：${parts.join('，')}`;
+      showToast(message, stats.invalidated > 0 ? 'warning' : 'success');
+    }
+
+    return true;
+  }
+
+  /**
+   * 处理文件导入（支持批注迁移）
    */
   async function handleFileImport(e) {
     const file = e.target.files[0];
@@ -191,13 +237,21 @@ const App = (() => {
       showToast('正在读取文件...', 'info');
       const result = await FileReader.readFile(file);
 
-      // 解析章节
+      // 保存旧章节数据（用于迁移）
+      const oldSections = state.sections.length > 0 ? [...state.sections] : null;
+      const hasExistingAnnotations = AnnotationManager.getAllAnnotations().length > 0;
+
+      // 解析新章节
       state.sections = TextParser.parseSections(result.content, result.type);
       state.contractTitle = file.name.replace(/\.\w+$/, '');
       state.fileLoaded = true;
 
-      // 清空之前的批注
-      AnnotationManager.clearAll();
+      // 如果已有批注，尝试迁移；否则清空
+      if (hasExistingAnnotations && oldSections) {
+        performMigration(state.sections, oldSections);
+      } else {
+        AnnotationManager.clearAll();
+      }
 
       // 渲染
       renderContract();
@@ -215,7 +269,7 @@ const App = (() => {
   }
 
   /**
-   * 处理拖拽导入
+   * 处理拖拽导入（支持批注迁移）
    */
   async function handleDrop(e) {
     e.preventDefault();
@@ -226,10 +280,22 @@ const App = (() => {
     try {
       showToast('正在读取文件...', 'info');
       const result = await FileReader.readFile(file);
+
+      // 保存旧章节数据
+      const oldSections = state.sections.length > 0 ? [...state.sections] : null;
+      const hasExistingAnnotations = AnnotationManager.getAllAnnotations().length > 0;
+
       state.sections = TextParser.parseSections(result.content, result.type);
       state.contractTitle = file.name.replace(/\.\w+$/, '');
       state.fileLoaded = true;
-      AnnotationManager.clearAll();
+
+      // 迁移或清空
+      if (hasExistingAnnotations && oldSections) {
+        performMigration(state.sections, oldSections);
+      } else {
+        AnnotationManager.clearAll();
+      }
+
       renderContract();
       enableControls(true);
       showToast(`成功导入：${file.name}`, 'success');
@@ -239,7 +305,7 @@ const App = (() => {
   }
 
   /**
-   * 处理项目文件导入
+   * 处理项目文件导入（含迁移验证）
    */
   async function handleProjectImport(e) {
     const file = e.target.files[0];
@@ -248,11 +314,20 @@ const App = (() => {
     try {
       showToast('正在加载项目...', 'info');
       const projectState = await ReportExporter.importProjectFile(file);
+
+      // 保存旧章节数据
+      const oldSections = state.sections.length > 0 ? [...state.sections] : null;
+      const hasExistingAnnotations = AnnotationManager.getAllAnnotations().length > 0;
+
       state.sections = projectState.sections;
       state.contractTitle = projectState.contractTitle;
       state.fileLoaded = true;
 
-      AnnotationManager.importAnnotations(projectState.annotations);
+      // 导入项目批注
+      AnnotationManager.importAnnotations(projectState.annotations, state.sections);
+
+      // 如果本地已有旧批注（与导入的不同），尝试迁移
+      // 这里直接导入项目的批注即可，因为它们与项目的 sections 匹配
       renderContract();
       enableControls(true);
 
@@ -297,7 +372,9 @@ const App = (() => {
     const annotations = AnnotationManager.getAllAnnotations();
     const counts = {};
     annotations.forEach(a => {
-      counts[a.sectionId] = (counts[a.sectionId] || 0) + 1;
+      if (a.status !== 'invalidated') {
+        counts[a.sectionId] = (counts[a.sectionId] || 0) + 1;
+      }
     });
 
     let html = '';
@@ -440,12 +517,20 @@ const App = (() => {
     forceBtn.textContent = '强制添加';
     forceBtn.onclick = () => {
       DOM.modalOverlay.style.display = 'none';
-      // 临时绕过重复检测：修改 offset 1 字符
       if (currentSelection) {
-        currentSelection.startOffset += 0; // 触发重新添加
         // 直接添加到数组（绕过检测）
+        const section = state.sections.find(s => s.id === currentSelection.sectionId);
+        const para = section ? section.paragraphs.find(p => p.index === currentSelection.paragraphIndex) : null;
+        const rangeId = section && para
+          ? TextParser.computeRangeId(section.title, para.text, currentSelection.anchorText)
+          : `rng_${currentSelection.sectionId}_${currentSelection.paragraphIndex}`;
+        const context = section && para
+          ? TextParser.computeAnchorContext(para.text, currentSelection.startOffset, currentSelection.endOffset)
+          : { before: '', after: '' };
+
         const ann = {
           id: 'ann_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2,5),
+          rangeId,
           sectionId: currentSelection.sectionId,
           paragraphIndex: currentSelection.paragraphIndex,
           startOffset: currentSelection.startOffset,
@@ -457,9 +542,11 @@ const App = (() => {
           status: 'pending',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
-          history: [{ action: 'created', time: new Date().toISOString(), status: 'pending' }]
+          history: [{ action: 'created', time: new Date().toISOString(), status: 'pending' }],
+          _sectionTitle: section ? section.title : '',
+          _context: context
         };
-        AnnotationManager.importAnnotations([...AnnotationManager.getAllAnnotations(), ann]);
+        AnnotationManager.importAnnotations([...AnnotationManager.getAllAnnotations(), ann], state.sections);
         showToast('已强制添加批注', 'success');
         hideAnnotationForm();
       }
@@ -471,7 +558,7 @@ const App = (() => {
   }
 
   /**
-   * 渲染批注列表
+   * 渲染批注列表（增强：支持已失效批注的视觉标记）
    */
   function renderAnnotationList() {
     let annotations = AnnotationManager.getAllAnnotations();
@@ -481,8 +568,13 @@ const App = (() => {
     if (filterType) annotations = annotations.filter(a => a.riskType === filterType);
     if (filterStatus) annotations = annotations.filter(a => a.status === filterStatus);
 
-    // 更新总数
-    DOM.annotationTotal.textContent = AnnotationManager.getAllAnnotations().length + ' 条';
+    // 更新总数（区分有效/失效）
+    const allAnns = AnnotationManager.getAllAnnotations();
+    const activeCount = allAnns.filter(a => a.status !== 'invalidated').length;
+    const invalidatedCount = allAnns.filter(a => a.status === 'invalidated').length;
+    let totalText = `${activeCount} 条`;
+    if (invalidatedCount > 0) totalText += ` (${invalidatedCount} 条失效)`;
+    DOM.annotationTotal.textContent = totalText;
 
     if (annotations.length === 0) {
       DOM.annotationList.innerHTML = '<p class="empty-hint">暂无批注</p>';
@@ -495,24 +587,33 @@ const App = (() => {
       const rl = AnnotationManager.RISK_LEVELS[ann.riskLevel];
       const st = AnnotationManager.STATUS_FLOW[ann.status];
       const section = state.sections.find(s => s.id === ann.sectionId);
+      const isInvalidated = ann.status === 'invalidated';
 
       // 获取可用的下一步状态
-      const nextStatuses = st.next || [];
+      const nextStatuses = st ? (st.next || []) : [];
 
-      html += `<div class="annotation-item" data-annotation-id="${ann.id}">
+      // 已失效批注使用特殊样式
+      const invalidatedClass = isInvalidated ? ' annotation-invalidated' : '';
+      const invalidatedStyle = isInvalidated ? 'opacity:0.6;border-left:3px solid #bdc3c7;' : '';
+
+      html += `<div class="annotation-item${invalidatedClass}" data-annotation-id="${ann.id}" style="${invalidatedStyle}">
         <div class="annotation-item-header">
-          <span class="risk-badge" style="background:${rt.color}">${rt.icon} ${rt.label}</span>
-          <span class="status-badge" style="background:${st.color}">${st.label}</span>
-          <span class="risk-badge" style="background:${rl.color}">${rl.label}</span>
+          <span class="risk-badge" style="background:${rt ? rt.color : '#999'}">${rt ? rt.icon : '?'} ${rt ? rt.label : '未知'}</span>
+          <span class="status-badge" style="background:${st ? st.color : '#999'}">${st ? st.label : '未知'}</span>
+          <span class="risk-badge" style="background:${rl ? rl.color : '#999'}">${rl ? rl.label : '未知'}</span>
         </div>
-        <div class="anchor-text" title="${AnnotationRenderer.escapeHTML(ann.anchorText)}">${AnnotationRenderer.escapeHTML(ann.anchorText)}</div>
+        <div class="anchor-text" title="${AnnotationRenderer.escapeHTML(ann.anchorText)}"
+          ${isInvalidated ? 'style="text-decoration:line-through;color:#999"' : ''}>
+          ${AnnotationRenderer.escapeHTML(ann.anchorText)}
+        </div>
+        ${isInvalidated && ann._invalidReason ? `<div class="invalidated-reason" style="color:#e74c3c;font-size:12px;margin-top:4px">⚠ ${AnnotationRenderer.escapeHTML(ann._invalidReason)}</div>` : ''}
         ${ann.comment ? `<div class="comment">${AnnotationRenderer.escapeHTML(ann.comment)}</div>` : ''}
         <div class="item-actions">
-          <button data-action="locate" data-id="${ann.id}" title="定位到原文">定位</button>
+          ${!isInvalidated ? `<button data-action="locate" data-id="${ann.id}" title="定位到原文">定位</button>` : ''}
           <button data-action="edit" data-id="${ann.id}" title="编辑批注">编辑</button>
           ${nextStatuses.map(ns => {
             const nsInfo = AnnotationManager.STATUS_FLOW[ns];
-            return `<button data-action="status" data-id="${ann.id}" data-status="${ns}" style="color:${nsInfo.color}" title="转为${nsInfo.label}">→ ${nsInfo.label}</button>`;
+            return nsInfo ? `<button data-action="status" data-id="${ann.id}" data-status="${ns}" style="color:${nsInfo.color}" title="转为${nsInfo.label}">→ ${nsInfo.label}</button>` : '';
           }).join('')}
           <button data-action="delete" data-id="${ann.id}" style="color:#e74c3c" title="删除">删除</button>
         </div>
@@ -775,7 +876,7 @@ const App = (() => {
         state.sections = projectState.sections;
         state.contractTitle = projectState.contractTitle;
         state.fileLoaded = true;
-        AnnotationManager.importAnnotations(projectState.annotations);
+        AnnotationManager.importAnnotations(projectState.annotations, state.sections);
         renderContract();
         enableControls(true);
 
@@ -822,5 +923,5 @@ const App = (() => {
   // 页面加载完成后初始化
   document.addEventListener('DOMContentLoaded', init);
 
-  return { init, showToast };
+  return { init, showToast, getSections };
 })();

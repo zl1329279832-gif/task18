@@ -1,6 +1,7 @@
 /**
  * annotation-renderer.js - 标注渲染模块
  * 负责DOM渲染、高亮绘制、虚拟滚动、搜索高亮
+ * 跳过已失效批注、验证范围有效性、支持失效批注视觉标记
  */
 const AnnotationRenderer = (() => {
   // 虚拟滚动配置
@@ -135,31 +136,64 @@ const AnnotationRenderer = (() => {
   }
 
   /**
+   * 验证批注范围是否在段落文本内有效
+   */
+  function isRangeValid(annotation, paraText) {
+    if (!annotation || !paraText) return false;
+    if (annotation.startOffset < 0 || annotation.endOffset < 0) return false;
+    if (annotation.endOffset > paraText.length) return false;
+    if (annotation.startOffset >= annotation.endOffset) return false;
+    const textAtOffset = paraText.substring(annotation.startOffset, annotation.endOffset);
+    return textAtOffset === annotation.anchorText;
+  }
+
+  /**
    * 对指定章节应用高亮
    */
   function applyHighlights(sectionId, contentEl) {
+    // 只取有效批注（排除 invalidated）
     const annotations = AnnotationManager.getAllAnnotations()
-      .filter(a => a.sectionId === sectionId);
+      .filter(a => a.sectionId === sectionId && a.status !== 'invalidated');
 
     if (annotations.length === 0 && !currentSearchTerm) return;
+
+    const section = sections.find(s => s.id === sectionId);
+    if (!section) return;
 
     const paragraphs = contentEl.querySelectorAll('.paragraph');
     paragraphs.forEach(paraEl => {
       const paraIdx = parseInt(paraEl.dataset.paraIndex);
-      const paraAnns = annotations.filter(a => a.paragraphIndex === paraIdx);
+      const para = section.paragraphs.find(p => p.index === paraIdx);
+      const paraText = para ? para.text : paraEl.textContent;
       const text = paraEl.textContent;
 
       // 收集所有需要高亮的范围
       let highlights = [];
 
-      // 批注高亮
+      // 批注高亮（仅有效范围的批注）
+      const paraAnns = annotations.filter(a => a.paragraphIndex === paraIdx);
       paraAnns.forEach(ann => {
-        highlights.push({
-          start: ann.startOffset,
-          end: ann.endOffset,
-          type: 'annotation',
-          data: ann
-        });
+        // 验证范围有效性
+        if (isRangeValid(ann, text)) {
+          highlights.push({
+            start: ann.startOffset,
+            end: ann.endOffset,
+            type: 'annotation',
+            data: ann
+          });
+        } else {
+          // 范围无效，尝试用 anchorText 重新定位
+          const idx = text.indexOf(ann.anchorText);
+          if (idx >= 0) {
+            highlights.push({
+              start: idx,
+              end: idx + ann.anchorText.length,
+              type: 'annotation',
+              data: ann
+            });
+          }
+          // 如果完全找不到，跳过该批注的高亮渲染
+        }
       });
 
       // 搜索高亮
@@ -188,13 +222,15 @@ const AnnotationRenderer = (() => {
   }
 
   /**
-   * 构建高亮HTML（不破坏DOM结构）
+   * 构建高亮HTML（不破坏DOM结构，增加范围校验）
    */
   function buildHighlightedHTML(text, highlights) {
     let result = '';
     let lastEnd = 0;
 
     highlights.forEach(h => {
+      // 跳过超出范围的高亮
+      if (h.start < 0 || h.end > text.length || h.start >= h.end) return;
       if (h.start < lastEnd) return; // 跳过重叠
       if (h.start > lastEnd) {
         result += escapeHTML(text.substring(lastEnd, h.start));
@@ -222,7 +258,7 @@ const AnnotationRenderer = (() => {
   }
 
   /**
-   * 刷新所有章节的高亮
+   * 刷新所有章节高亮
    */
   function refreshHighlights() {
     sectionElements.forEach((wrapper, sectionId) => {
@@ -298,6 +334,11 @@ const AnnotationRenderer = (() => {
     const ann = AnnotationManager.getAllAnnotations().find(a => a.id === annotationId);
     if (!ann) return false;
 
+    // 已失效的批注无法定位到原文
+    if (ann.status === 'invalidated') {
+      return false;
+    }
+
     // 确保章节已渲染
     ensureSectionRendered(ann.sectionId);
 
@@ -370,12 +411,14 @@ const AnnotationRenderer = (() => {
   }
 
   /**
-   * 更新章节批注计数
+   * 更新章节批注计数（仅计有效批注）
    */
   function updateAnnotationCounts(annotations) {
     const counts = {};
     annotations.forEach(a => {
-      counts[a.sectionId] = (counts[a.sectionId] || 0) + 1;
+      if (a.status !== 'invalidated') {
+        counts[a.sectionId] = (counts[a.sectionId] || 0) + 1;
+      }
     });
 
     document.querySelectorAll('.annotation-count').forEach(el => {

@@ -1,10 +1,31 @@
 /**
  * report-exporter.js - 报告导出模块
  * 负责带批注HTML报告生成、localStorage存取、完整状态序列化
+ * 导出时验证批注有效性，失效批注单独标记，不污染正文高亮
  */
 const ReportExporter = (() => {
   const STORAGE_KEY = 'contract_review_data';
   const MAX_LOCAL_STORAGE_SIZE = 5 * 1024 * 1024; // 5MB
+
+  /**
+   * 验证单条批注的范围是否在当前章节数据中有效
+   */
+  function isAnnotationValid(ann, sections) {
+    if (ann.status === 'invalidated') return false;
+
+    const section = sections.find(s => s.id === ann.sectionId);
+    if (!section) return false;
+
+    const para = section.paragraphs.find(p => p.index === ann.paragraphIndex);
+    if (!para) return false;
+
+    if (ann.startOffset < 0 || ann.endOffset < 0) return false;
+    if (ann.endOffset > para.text.length) return false;
+    if (ann.startOffset >= ann.endOffset) return false;
+
+    const textAtOffset = para.text.substring(ann.startOffset, ann.endOffset);
+    return textAtOffset === ann.anchorText;
+  }
 
   /**
    * 导出带批注的 HTML 报告
@@ -12,6 +33,12 @@ const ReportExporter = (() => {
   function exportReport(sections, annotations, stats) {
     const now = new Date();
     const dateStr = now.toLocaleString('zh-CN');
+
+    // 分离有效批注和失效批注
+    const validAnnotations = annotations.filter(a => isAnnotationValid(a, sections));
+    const invalidatedAnnotations = annotations.filter(a =>
+      a.status === 'invalidated' || !isAnnotationValid(a, sections)
+    );
 
     let reportHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -47,19 +74,31 @@ const ReportExporter = (() => {
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; color: #fff; font-size: 11px; }
   .risk-group-title { font-size: 15px; font-weight: bold; margin: 16px 0 8px; padding: 6px 12px; border-radius: 4px; }
   .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; text-align: center; color: #999; font-size: 12px; }
+  .invalidated-section { margin-top: 40px; page-break-before: always; }
+  .invalidated-section h2 { font-size: 20px; color: #95a5a6; border-bottom: 2px solid #bdc3c7; padding-bottom: 8px; margin-bottom: 16px; }
+  .invalidated-note { padding: 8px 12px; margin: 4px 0; background: #f5f5f5; border-left: 3px solid #bdc3c7; border-radius: 0 4px 4px 0; font-size: 13px; color: #7f8c8d; text-decoration: line-through; }
+  .invalidated-note .reason { text-decoration: none; font-style: italic; color: #e74c3c; font-size: 12px; display: block; margin-top: 4px; }
+  .warning-banner { background: #fce4ec; border: 1px solid #ef9a9a; border-radius: 6px; padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: #c62828; }
   @media print { body { padding: 20px; } .section { page-break-inside: avoid; } }
 </style>
 </head>
 <body>
 <div class="report-header">
   <h1>合同评审报告</h1>
-  <div class="meta">生成时间：${dateStr} | 批注总数：${annotations.length} 条</div>
+  <div class="meta">生成时间：${dateStr} | 有效批注：${validAnnotations.length} 条${invalidatedAnnotations.length > 0 ? ' | 已失效：' + invalidatedAnnotations.length + ' 条' : ''}</div>
 </div>`;
 
-    // 统计摘要
-    const highCount = annotations.filter(a => a.riskLevel === 'high').length;
-    const mediumCount = annotations.filter(a => a.riskLevel === 'medium').length;
-    const lowCount = annotations.filter(a => a.riskLevel === 'low').length;
+    // 失效批注警告
+    if (invalidatedAnnotations.length > 0) {
+      reportHTML += `<div class="warning-banner">
+        ⚠ 本报告包含 ${invalidatedAnnotations.length} 条已失效批注（因合同文本重新解析后无法定位），这些批注不参与正文高亮和统计。
+      </div>`;
+    }
+
+    // 统计摘要（仅基于有效批注）
+    const highCount = validAnnotations.filter(a => a.riskLevel === 'high').length;
+    const mediumCount = validAnnotations.filter(a => a.riskLevel === 'medium').length;
+    const lowCount = validAnnotations.filter(a => a.riskLevel === 'low').length;
 
     reportHTML += `
 <div class="summary">
@@ -71,13 +110,13 @@ const ReportExporter = (() => {
   </div>
 </div>`;
 
-    // 合同正文（带批注）
+    // 合同正文（仅含有效批注的高亮）
     sections.forEach(section => {
       reportHTML += `<div class="section">
         <h2>${escapeHTML(section.title)}</h2>`;
 
       section.paragraphs.forEach(para => {
-        const paraAnns = annotations.filter(a =>
+        const paraAnns = validAnnotations.filter(a =>
           a.sectionId === section.id && a.paragraphIndex === para.index
         ).sort((a, b) => a.startOffset - b.startOffset);
 
@@ -106,13 +145,13 @@ const ReportExporter = (() => {
       reportHTML += '</div>';
     });
 
-    // 评审清单
+    // 评审清单（仅有效批注）
     reportHTML += `<div class="checklist-section">
       <h2>评审清单</h2>`;
 
     // 按风险类型分组
     const grouped = {};
-    annotations.forEach(ann => {
+    validAnnotations.forEach(ann => {
       if (!grouped[ann.riskType]) grouped[ann.riskType] = [];
       grouped[ann.riskType].push(ann);
     });
@@ -145,6 +184,27 @@ const ReportExporter = (() => {
 
     reportHTML += '</div>';
 
+    // 失效批注区域
+    if (invalidatedAnnotations.length > 0) {
+      reportHTML += `<div class="invalidated-section">
+        <h2>已失效批注 (${invalidatedAnnotations.length} 条)</h2>
+        <p style="color:#7f8c8d;font-size:13px;margin-bottom:16px">以下批注因合同文本重新解析后无法定位到原文对应位置，已被标记为失效。</p>`;
+
+      invalidatedAnnotations.forEach(ann => {
+        const rt = AnnotationManager.RISK_TYPES[ann.riskType];
+        const rl = AnnotationManager.RISK_LEVELS[ann.riskLevel];
+        reportHTML += `<div class="invalidated-note">
+          <span class="risk-tag" style="background:${rt ? rt.color : '#999'}">${rt ? rt.label : '未知'}</span>
+          <span class="badge" style="background:${rl ? rl.color : '#999'}">${rl ? rl.label : '未知'}</span>
+          ${escapeHTML(truncate(ann.anchorText, 50))}
+          ${ann.comment ? ' — ' + escapeHTML(ann.comment) : ''}
+          <span class="reason">失效原因: ${escapeHTML(ann._invalidReason || '文本重新解析后无法定位')}</span>
+        </div>`;
+      });
+
+      reportHTML += '</div>';
+    }
+
     // 页脚
     reportHTML += `<div class="footer">
       <p>本报告由合同评审系统自动生成 | ${dateStr}</p>
@@ -155,20 +215,24 @@ const ReportExporter = (() => {
   }
 
   /**
-   * 构建带标注内联的文本HTML
+   * 构建带标注内联的文本HTML（增加范围校验）
    */
   function buildAnnotatedText(text, annotations) {
     let result = '';
     let lastEnd = 0;
 
     annotations.forEach(ann => {
+      // 范围校验：跳过无效范围
+      if (ann.startOffset < 0 || ann.endOffset > text.length) return;
+      if (ann.startOffset >= ann.endOffset) return;
       if (ann.startOffset < lastEnd) return;
+
       if (ann.startOffset > lastEnd) {
         result += escapeHTML(text.substring(lastEnd, ann.startOffset));
       }
       const rt = AnnotationManager.RISK_TYPES[ann.riskType];
       const highlighted = escapeHTML(text.substring(ann.startOffset, ann.endOffset));
-      result += `<span class="annotation-highlight" style="background-color:${rt.color}20;border-bottom:2px solid ${rt.color}">${highlighted}</span>`;
+      result += `<span class="annotation-highlight" style="background-color:${rt ? rt.color : '#999'}20;border-bottom:2px solid ${rt ? rt.color : '#999'}">${highlighted}</span>`;
       lastEnd = ann.endOffset;
     });
 

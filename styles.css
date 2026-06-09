@@ -30,6 +30,7 @@
   --status-flagged: #e67e22;
   --status-resolved: #27ae60;
   --status-dismissed: #7f8c8d;
+  --status-invalidated: #bdc3c7;
 }
 
 /* ==================== Reset & Base ==================== */
@@ -617,6 +618,27 @@ select {
 }
 
 .annotation-item .item-actions button:hover { background: var(--bg); }
+
+/* 已失效批注样式 */
+.annotation-item.annotation-invalidated {
+  opacity: 0.6;
+  border-left: 3px solid var(--status-invalidated);
+  background: #fafafa;
+}
+.annotation-item.annotation-invalidated:hover {
+  opacity: 0.8;
+  background: #f5f5f5;
+}
+.annotation-item.annotation-invalidated .anchor-text {
+  text-decoration: line-through;
+  color: #aaa;
+}
+.invalidated-reason {
+  color: #e74c3c;
+  font-size: 12px;
+  margin-top: 4px;
+  font-style: italic;
+}
 
 /* ==================== Annotation Filters ==================== */
 .annotation-filters {
