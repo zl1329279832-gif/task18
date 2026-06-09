@@ -405,17 +405,66 @@ const TextParser = (() => {
   }
 
   /**
+   * 计算候选文本与锚点的上下文重叠得分（用于全局搜索排序）
+   * @param {string} candidateText - 候选段落全文
+   * @param {string} anchorText - 锚点文本
+   * @param {object} context - {before, after}
+   * @returns {number} 0~1 得分
+   */
+  function computeContextOverlap(candidateText, anchorText, context) {
+    if (!candidateText || !anchorText) return 0;
+    const anchorIdx = candidateText.indexOf(anchorText);
+    if (anchorIdx < 0) return 0;
+
+    let score = 0.5; // 锚点找到即得基础分
+    if (context) {
+      if (context.before) {
+        const slice = candidateText.substring(Math.max(0, anchorIdx - context.before.length - 5), anchorIdx);
+        if (slice.includes(context.before)) score += 0.25;
+        else {
+          // 部分匹配
+          let matchLen = 0;
+          for (let i = 0; i < Math.min(slice.length, context.before.length); i++) {
+            if (slice[slice.length - 1 - i] === context.before[context.before.length - 1 - i]) matchLen++;
+            else break;
+          }
+          score += (matchLen / context.before.length) * 0.15;
+        }
+      }
+      if (context.after) {
+        const slice = candidateText.substring(anchorIdx + anchorText.length, anchorIdx + anchorText.length + context.after.length + 5);
+        if (slice.includes(context.after)) score += 0.25;
+        else {
+          let matchLen = 0;
+          for (let i = 0; i < Math.min(slice.length, context.after.length); i++) {
+            if (slice[i] === context.after[i]) matchLen++;
+            else break;
+          }
+          score += (matchLen / context.after.length) * 0.15;
+        }
+      }
+    }
+    return score;
+  }
+
+  /**
    * 批注迁移：在合同重新解析后，将旧批注映射到新章节结构
    * @param {Annotation[]} oldAnnotations - 旧批注列表
    * @param {Section[]} newSections - 新解析的章节
    * @param {Section[]} oldSections - 旧章节（用于标题匹配）
-   * @returns {{migrated: Annotation[], invalidated: Annotation[], stats: object}}
+   * @param {DiffResult} [diffResult] - 可选的版本对比结果（含 sectionMapping）
+   * @returns {{migrated: Annotation[], invalidated: Annotation[], stats: object, details: object[]}}
    */
-  function migrateAnnotations(oldAnnotations, newSections, oldSections) {
+  function migrateAnnotations(oldAnnotations, newSections, oldSections, diffResult) {
     const results = {
       migrated: [],
       invalidated: [],
-      stats: { total: oldAnnotations.length, exactMatch: 0, corrected: 0, invalidated: 0 }
+      stats: {
+        total: oldAnnotations.length,
+        exactMatch: 0, corrected: 0, invalidated: 0,
+        byStrategy: {}
+      },
+      details: []
     };
 
     if (!oldAnnotations || oldAnnotations.length === 0) return results;
@@ -424,9 +473,12 @@ const TextParser = (() => {
       results.invalidated = oldAnnotations.map(ann => ({
         ...ann,
         status: 'invalidated',
-        _invalidReason: '新解析无章节'
+        _invalidReason: '新解析无章节',
+        _migrationStrategy: 'failed',
+        _migrationDetail: '新解析结果为空'
       }));
       results.stats.invalidated = oldAnnotations.length;
+      results.stats.byStrategy['failed'] = oldAnnotations.length;
       return results;
     }
 
@@ -443,6 +495,15 @@ const TextParser = (() => {
       oldSections.forEach(s => oldSectionMap.set(s.id, s));
     }
 
+    // ========== 构建 diff 感知的章节映射 (Strategy 0) ==========
+    const diffSectionMapping = new Map();
+    if (diffResult && diffResult.sectionMapping) {
+      for (const [oldId, newIds] of diffResult.sectionMapping) {
+        const matched = newIds.map(nid => newSections.find(s => s.id === nid)).filter(Boolean);
+        if (matched.length > 0) diffSectionMapping.set(oldId, matched);
+      }
+    }
+
     for (const ann of oldAnnotations) {
       let targetSection = null;
       let targetPara = null;
@@ -450,15 +511,71 @@ const TextParser = (() => {
       let newStart = ann.startOffset;
       let newEnd = ann.endOffset;
       let newParaIndex = ann.paragraphIndex;
+      let migrationStrategy = null;
+      let migrationDetail = '';
 
-      // 策略1：通过 sectionId 精确查找
-      targetSection = newSections.find(s => s.id === ann.sectionId);
+      // ========== 策略0：基于 diff 结果的章节映射（最可靠） ==========
+      if (diffSectionMapping.has(ann.sectionId)) {
+        const candidateSections = diffSectionMapping.get(ann.sectionId);
 
-      // 策略2：通过章节标题查找
+        if (candidateSections.length === 1) {
+          targetSection = candidateSections[0];
+          migrationStrategy = 'diff-mapping';
+          migrationDetail = '1:1 映射: ' + candidateSections[0].title;
+        } else {
+          // 拆分场景：一个旧章节 → 多个新章节，在所有候选中搜索锚点
+          for (const candidate of candidateSections) {
+            for (const para of candidate.paragraphs) {
+              const idx = findAnchorInParagraph(
+                para.text, ann.anchorText, ann._context, ann.startOffset
+              );
+              if (idx >= 0) {
+                targetSection = candidate;
+                targetPara = para;
+                newStart = idx;
+                newEnd = idx + ann.anchorText.length;
+                newParaIndex = para.index;
+                corrected = true;
+                migrationStrategy = 'diff-mapping-split';
+                migrationDetail = '拆分映射: 在"' + candidate.title + '"中找到锚点';
+                break;
+              }
+            }
+            if (targetSection) break;
+          }
+          // 回退：选择上下文重叠最高的候选
+          if (!targetSection) {
+            let bestCandidate = null, bestOverlap = -1;
+            for (const candidate of candidateSections) {
+              const text = candidate.paragraphs.map(p => p.text).join('\n');
+              const overlap = computeContextOverlap(text, ann.anchorText, ann._context);
+              if (overlap > bestOverlap) { bestOverlap = overlap; bestCandidate = candidate; }
+            }
+            if (bestCandidate && bestOverlap > 0.1) {
+              targetSection = bestCandidate;
+              migrationStrategy = 'diff-mapping-split-fallback';
+              migrationDetail = '拆分映射回退: "' + bestCandidate.title + '"';
+            }
+          }
+        }
+      }
+
+      // ========== 策略1：通过 sectionId 精确查找 ==========
+      if (!targetSection) {
+        targetSection = newSections.find(s => s.id === ann.sectionId);
+        if (targetSection) {
+          migrationStrategy = 'exact-id';
+          migrationDetail = 'sectionId 精确匹配';
+        }
+      }
+
+      // ========== 策略2：通过章节标题查找 ==========
       if (!targetSection && ann._sectionTitle) {
         const matches = titleToNewSections.get(ann._sectionTitle);
         if (matches && matches.length === 1) {
           targetSection = matches[0];
+          migrationStrategy = 'title-match';
+          migrationDetail = '标题匹配: ' + targetSection.title;
         } else if (matches && matches.length > 1) {
           // 多个同名章节：通过段落内容匹配选择最佳
           for (const candidate of matches) {
@@ -469,55 +586,88 @@ const TextParser = (() => {
               );
               if (idx >= 0) {
                 targetSection = candidate;
+                migrationStrategy = 'title-match';
+                migrationDetail = '标题+段落匹配: ' + candidate.title;
                 break;
               }
             }
           }
-          // 如果仍然没找到，选第一个
-          if (!targetSection) targetSection = matches[0];
+          // 如果仍然没找到，选上下文重叠最高的
+          if (!targetSection) {
+            let bestCandidate = null, bestOverlap = -1;
+            for (const candidate of matches) {
+              const text = candidate.paragraphs.map(p => p.text).join('\n');
+              const overlap = computeContextOverlap(text, ann.anchorText, ann._context);
+              if (overlap > bestOverlap) { bestOverlap = overlap; bestCandidate = candidate; }
+            }
+            targetSection = bestCandidate || matches[0];
+            migrationStrategy = 'title-match';
+            migrationDetail = '同名章节回退: ' + (targetSection ? targetSection.title : matches[0].title);
+          }
         }
       }
 
-      // 策略3：通过旧章节标题查找
+      // ========== 策略3：通过旧章节标题查找 ==========
       if (!targetSection) {
         const oldSection = oldSectionMap.get(ann.sectionId);
         if (oldSection) {
           const matches = titleToNewSections.get(oldSection.title);
           if (matches && matches.length >= 1) {
             targetSection = matches[0];
+            migrationStrategy = 'old-title-match';
+            migrationDetail = '旧标题匹配: ' + matches[0].title;
           }
         }
       }
 
-      // 策略4：全局搜索锚点文本（最后手段）
+      // ========== 策略4：全局搜索（带上下文评分，最后手段） ==========
       if (!targetSection) {
+        const allMatches = [];
         for (const section of newSections) {
           for (const para of section.paragraphs) {
-            const idx = findAnchorInParagraph(
-              para.text, ann.anchorText, ann._context, -1
-            );
-            if (idx >= 0) {
-              targetSection = section;
-              targetPara = para;
-              newStart = idx;
-              newEnd = idx + ann.anchorText.length;
-              newParaIndex = para.index;
-              corrected = true;
-              break;
+            let searchFrom = 0;
+            while (searchFrom <= para.text.length - ann.anchorText.length) {
+              const idx = para.text.indexOf(ann.anchorText, searchFrom);
+              if (idx < 0) break;
+              const score = computeContextOverlap(para.text, ann.anchorText, ann._context);
+              allMatches.push({ section, para, idx, score });
+              searchFrom = idx + 1;
             }
           }
-          if (targetSection) break;
+        }
+        if (allMatches.length > 0) {
+          allMatches.sort((a, b) => b.score - a.score);
+          const best = allMatches[0];
+          targetSection = best.section;
+          targetPara = best.para;
+          newStart = best.idx;
+          newEnd = best.idx + ann.anchorText.length;
+          newParaIndex = best.para.index;
+          corrected = true;
+          migrationStrategy = 'global-search';
+          migrationDetail = '全局搜索: ' + allMatches.length + '个候选, 最佳得分=' + best.score.toFixed(2);
         }
       }
 
+      // ========== 迁移失败 ==========
       if (!targetSection) {
-        // 迁移失败 → 标记失效
-        results.invalidated.push({
+        const invAnn = {
           ...ann,
           status: 'invalidated',
-          _invalidReason: '无法在新章节结构中定位'
-        });
+          _invalidReason: '无法在新章节结构中定位',
+          _migrationStrategy: 'failed',
+          _migrationDetail: '所有策略均未匹配'
+        };
+        results.invalidated.push(invAnn);
         results.stats.invalidated++;
+        results.stats.byStrategy['failed'] = (results.stats.byStrategy['failed'] || 0) + 1;
+        results.details.push({
+          id: ann.id, anchorText: ann.anchorText, riskType: ann.riskType,
+          riskLevel: ann.riskLevel, oldSectionTitle: ann._sectionTitle,
+          newSectionTitle: null, status: 'invalidated',
+          strategy: 'failed', detail: '所有策略均未匹配',
+          invalidReason: '无法在新章节结构中定位'
+        });
         continue;
       }
 
@@ -544,12 +694,23 @@ const TextParser = (() => {
           }
         }
         if (!found) {
-          results.invalidated.push({
+          const invAnn = {
             ...ann,
             status: 'invalidated',
-            _invalidReason: `章节"${targetSection.title}"中未找到锚点文本`
-          });
+            _invalidReason: '章节"' + targetSection.title + '"中未找到锚点文本',
+            _migrationStrategy: migrationStrategy,
+            _migrationDetail: migrationDetail + ' → 锚点未找到'
+          };
+          results.invalidated.push(invAnn);
           results.stats.invalidated++;
+          results.stats.byStrategy['failed'] = (results.stats.byStrategy['failed'] || 0) + 1;
+          results.details.push({
+            id: ann.id, anchorText: ann.anchorText, riskType: ann.riskType,
+            riskLevel: ann.riskLevel, oldSectionTitle: ann._sectionTitle,
+            newSectionTitle: targetSection.title, status: 'invalidated',
+            strategy: migrationStrategy, detail: '锚点文本在目标章节中未找到',
+            invalidReason: invAnn._invalidReason
+          });
           continue;
         }
       }
@@ -565,6 +726,10 @@ const TextParser = (() => {
             newStart = ann.startOffset;
             newEnd = ann.endOffset;
             results.stats.exactMatch++;
+            if (!migrationStrategy) {
+              migrationStrategy = 'exact-id';
+              migrationDetail = '精确偏移匹配';
+            }
           } else {
             // 偏移漂移，用上下文感知查找
             const idx = findAnchorInParagraph(
@@ -576,12 +741,23 @@ const TextParser = (() => {
               corrected = true;
               results.stats.corrected++;
             } else {
-              results.invalidated.push({
+              const invAnn = {
                 ...ann,
                 status: 'invalidated',
-                _invalidReason: '锚点文本在段落中未找到'
-              });
+                _invalidReason: '锚点文本在段落中未找到',
+                _migrationStrategy: migrationStrategy || 'failed',
+                _migrationDetail: (migrationDetail || '') + ' → 锚点偏移漂移'
+              };
+              results.invalidated.push(invAnn);
               results.stats.invalidated++;
+              results.stats.byStrategy['failed'] = (results.stats.byStrategy['failed'] || 0) + 1;
+              results.details.push({
+                id: ann.id, anchorText: ann.anchorText, riskType: ann.riskType,
+                riskLevel: ann.riskLevel, oldSectionTitle: ann._sectionTitle,
+                newSectionTitle: targetSection.title, status: 'invalidated',
+                strategy: invAnn._migrationStrategy, detail: '锚点偏移漂移',
+                invalidReason: invAnn._invalidReason
+              });
               continue;
             }
           }
@@ -596,18 +772,29 @@ const TextParser = (() => {
             corrected = true;
             results.stats.corrected++;
           } else {
-            results.invalidated.push({
+            const invAnn = {
               ...ann,
               status: 'invalidated',
-              _invalidReason: '偏移越界且锚点文本未找到'
-            });
+              _invalidReason: '偏移越界且锚点文本未找到',
+              _migrationStrategy: migrationStrategy || 'failed',
+              _migrationDetail: (migrationDetail || '') + ' → 偏移越界'
+            };
+            results.invalidated.push(invAnn);
             results.stats.invalidated++;
+            results.stats.byStrategy['failed'] = (results.stats.byStrategy['failed'] || 0) + 1;
+            results.details.push({
+              id: ann.id, anchorText: ann.anchorText, riskType: ann.riskType,
+              riskLevel: ann.riskLevel, oldSectionTitle: ann._sectionTitle,
+              newSectionTitle: targetSection.title, status: 'invalidated',
+              strategy: invAnn._migrationStrategy, detail: '偏移越界且锚点文本未找到',
+              invalidReason: invAnn._invalidReason
+            });
             continue;
           }
         }
       }
 
-      // 迁移成功，更新批注
+      // ========== 迁移成功 ==========
       const migratedAnn = {
         ...ann,
         sectionId: targetSection.id,
@@ -616,8 +803,10 @@ const TextParser = (() => {
         endOffset: newEnd,
         _sectionTitle: targetSection.title,
         _context: computeAnchorContext(targetPara.text, newStart, newEnd),
-        status: ann.status === 'invalidated' ? 'pending' : ann.status, // 恢复已失效的
-        _invalidReason: undefined
+        status: ann.status === 'invalidated' ? 'pending' : ann.status,
+        _invalidReason: undefined,
+        _migrationStrategy: migrationStrategy,
+        _migrationDetail: migrationDetail
       };
 
       // 重新计算 rangeId
@@ -625,7 +814,30 @@ const TextParser = (() => {
         targetSection.title, targetPara.text, ann.anchorText
       );
 
+      // 推送迁移历史条目
+      if (!migratedAnn.history) migratedAnn.history = [];
+      migratedAnn.history.push({
+        action: 'migrated',
+        strategy: migrationStrategy,
+        detail: migrationDetail,
+        from: { sectionId: ann.sectionId, paragraphIndex: ann.paragraphIndex },
+        to: { sectionId: targetSection.id, paragraphIndex: newParaIndex },
+        corrected: corrected,
+        time: new Date().toISOString()
+      });
+
+      // 统计策略分布
+      const strat = migrationStrategy || 'unknown';
+      results.stats.byStrategy[strat] = (results.stats.byStrategy[strat] || 0) + 1;
+
       results.migrated.push(migratedAnn);
+      results.details.push({
+        id: ann.id, anchorText: ann.anchorText, riskType: ann.riskType,
+        riskLevel: ann.riskLevel, oldSectionTitle: ann._sectionTitle,
+        newSectionTitle: targetSection.title, status: migratedAnn.status,
+        strategy: migrationStrategy, detail: migrationDetail,
+        corrected: corrected, invalidReason: null
+      });
     }
 
     return results;
@@ -641,6 +853,6 @@ const TextParser = (() => {
   return {
     parseSections, getFullText, validateAnnotationPosition, detectSectionHeader,
     computeRangeId, computeAnchorContext, migrateAnnotations, hashString,
-    findAnchorInParagraph, computeParagraphHash
+    findAnchorInParagraph, computeParagraphHash, computeContextOverlap
   };
 })();

@@ -6,14 +6,17 @@ const RiskStatistics = (() => {
 
   /**
    * 计算统计数据
+   * @param {Annotation[]} annotations - 批注列表
+   * @param {boolean} filterInvalidated - 是否排除已失效批注（默认 true）
    */
-  function computeStats(annotations) {
+  function computeStats(annotations, filterInvalidated = true) {
     const stats = {
-      total: annotations.length,
+      total: 0,
       byType: {},
       byLevel: { high: 0, medium: 0, low: 0 },
       byStatus: {},
-      byTypeAndLevel: {}
+      byTypeAndLevel: {},
+      invalidatedCount: 0
     };
 
     // 初始化类型计数
@@ -28,6 +31,19 @@ const RiskStatistics = (() => {
     });
 
     annotations.forEach(ann => {
+      // 始终统计失效数量
+      if (ann.status === 'invalidated') stats.invalidatedCount++;
+
+      // 过滤失效批注：不参与 byType/byLevel/byTypeAndLevel 统计
+      if (filterInvalidated && ann.status === 'invalidated') {
+        // 仅在 byStatus 中记录失效数
+        if (stats.byStatus[ann.status] !== undefined) {
+          stats.byStatus[ann.status]++;
+        }
+        return;
+      }
+
+      stats.total++;
       if (stats.byType[ann.riskType] !== undefined) {
         stats.byType[ann.riskType]++;
       }

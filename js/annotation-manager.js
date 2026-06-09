@@ -147,12 +147,22 @@ const AnnotationManager = (() => {
     if (!ann) throw new Error(`批注不存在: ${id}`);
 
     const allowedFields = ['comment', 'riskLevel', 'riskType'];
+    const trackedFields = ['riskLevel', 'riskType'];
+    const now = new Date().toISOString();
+
     allowedFields.forEach(field => {
-      if (changes[field] !== undefined) {
+      if (changes[field] !== undefined && changes[field] !== ann[field]) {
+        const oldVal = ann[field];
         ann[field] = changes[field];
+        if (trackedFields.includes(field)) {
+          ann.history.push({
+            action: 'field_change', field, from: oldVal, to: changes[field], time: now
+          });
+        }
       }
     });
-    ann.updatedAt = new Date().toISOString();
+
+    ann.updatedAt = now;
     notifyListeners('update', ann);
     return ann;
   }
@@ -289,9 +299,9 @@ const AnnotationManager = (() => {
    * @param {Section[]} oldSections - 旧章节
    * @returns {{stats: object}} 迁移统计
    */
-  function migrateToNewSections(newSections, oldSections) {
+  function migrateToNewSections(newSections, oldSections, diffResult) {
     const oldAnnotations = [...annotations];
-    const result = TextParser.migrateAnnotations(oldAnnotations, newSections, oldSections);
+    const result = TextParser.migrateAnnotations(oldAnnotations, newSections, oldSections, diffResult);
 
     // 合并迁移结果（保留失效批注）
     const allMigrated = [...result.migrated, ...result.invalidated];

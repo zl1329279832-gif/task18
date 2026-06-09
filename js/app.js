@@ -875,6 +875,11 @@ const App = (() => {
       { num: stats.byStatus.resolved, label: '已解决', color: 'var(--status-resolved)' }
     ];
 
+    // 如果有失效批注，显示失效卡片
+    if (stats.invalidatedCount > 0) {
+      cards.push({ num: stats.invalidatedCount, label: '已失效', color: '#bdc3c7' });
+    }
+
     DOM.summaryCards.innerHTML = cards.map(card =>
       `<div class="summary-card">
         <div class="card-num" style="color:${card.color}">${card.num}</div>
@@ -971,13 +976,15 @@ const App = (() => {
       let migrationStats = { total: 0, migrated: 0, invalidated: 0 };
 
       if (oldAnnotations.length > 0) {
-        // 临时迁移
-        const migrationResult = TextParser.migrateAnnotations(oldAnnotations, newSections, oldSections);
+        // 临时迁移（传入 diffResult 以启用 diff 感知迁移）
+        const migrationResult = TextParser.migrateAnnotations(oldAnnotations, newSections, oldSections, diffResult);
         newAnnotations = migrationResult.migrated || [];
         migrationStats = {
           total: oldAnnotations.length,
           migrated: (migrationResult.stats?.exactMatch || 0) + (migrationResult.stats?.corrected || 0),
-          invalidated: migrationResult.stats?.invalidated || 0
+          invalidated: migrationResult.stats?.invalidated || 0,
+          byStrategy: migrationResult.stats?.byStrategy || {},
+          details: migrationResult.details || []
         };
       }
 
@@ -1066,8 +1073,8 @@ const App = (() => {
       return;
     }
 
-    const { diffResult, suggestions, riskDeltas, migrationStats } = state.comparisonData;
-    ComparisonExporter.exportComparisonReport(diffResult, suggestions, riskDeltas, migrationStats);
+    const { diffResult, suggestions, riskDeltas, migrationStats, oldAnnotations, newAnnotations } = state.comparisonData;
+    ComparisonExporter.exportComparisonReport(diffResult, suggestions, riskDeltas, migrationStats, oldAnnotations, newAnnotations);
     showToast('对比报告导出成功', 'success');
   }
 

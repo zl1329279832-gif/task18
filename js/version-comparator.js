@@ -325,7 +325,7 @@ const VersionComparator = (() => {
           bestJ = j;
         }
       }
-      if (bestJ >= 0 && bestDist <= 2) {
+      if (bestJ >= 0 && bestDist <= 4) {
         const sim = computeSimilarity(
           oldSections[i].paragraphs.map(p => p.text).join(''),
           newSections[bestJ].paragraphs.map(p => p.text).join('')
@@ -334,6 +334,82 @@ const VersionComparator = (() => {
           pairs.push({ oldIdx: i, newIdx: bestJ, sim });
           oldUsed.add(i);
           newUsed.add(bestJ);
+        }
+      }
+    }
+
+    // ========== 拆分/合并检测 ==========
+    // 收集未匹配的旧/新章节
+    const unmatchedOld = [];
+    const unmatchedNew = [];
+    for (let i = 0; i < oldSections.length; i++) {
+      if (!oldUsed.has(i)) unmatchedOld.push(i);
+    }
+    for (let j = 0; j < newSections.length; j++) {
+      if (!newUsed.has(j)) unmatchedNew.push(j);
+    }
+
+    const splitMergeInfo = [];
+
+    // 检测拆分：一个旧章节 → 多个新章节
+    for (const oi of unmatchedOld) {
+      if (oldUsed.has(oi)) continue;
+      const oldText = oldSections[oi].paragraphs.map(p => p.text).join('');
+      if (!oldText) continue;
+
+      const similarNew = [];
+      for (const ni of unmatchedNew) {
+        if (newUsed.has(ni)) continue;
+        const newText = newSections[ni].paragraphs.map(p => p.text).join('');
+        const sim = computeSimilarity(oldText, newText);
+        if (sim >= 0.3) similarNew.push({ idx: ni, sim });
+      }
+
+      if (similarNew.length >= 2) {
+        const combinedNewText = similarNew.sort((a, b) => a.idx - b.idx)
+          .map(s => newSections[s.idx].paragraphs.map(p => p.text).join('')).join('');
+        const coverageSim = computeSimilarity(oldText, combinedNewText);
+        if (coverageSim >= 0.5) {
+          splitMergeInfo.push({
+            type: 'split', sources: [oi],
+            targets: similarNew.map(s => s.idx), similarity: coverageSim
+          });
+          // 添加主要配对（相似度最高的），避免误标为删除
+          const primary = similarNew.slice().sort((a, b) => b.sim - a.sim)[0];
+          pairs.push({ oldIdx: oi, newIdx: primary.idx, sim: primary.sim, isSplitPrimary: true });
+          oldUsed.add(oi);
+          similarNew.forEach(s => newUsed.add(s.idx));
+        }
+      }
+    }
+
+    // 检测合并：多个旧章节 → 一个新章节
+    for (const ni of unmatchedNew) {
+      if (newUsed.has(ni)) continue;
+      const newText = newSections[ni].paragraphs.map(p => p.text).join('');
+      if (!newText) continue;
+
+      const similarOld = [];
+      for (const oi of unmatchedOld) {
+        if (oldUsed.has(oi)) continue;
+        const oldText = oldSections[oi].paragraphs.map(p => p.text).join('');
+        const sim = computeSimilarity(oldText, newText);
+        if (sim >= 0.3) similarOld.push({ idx: oi, sim });
+      }
+
+      if (similarOld.length >= 2) {
+        const combinedOldText = similarOld.sort((a, b) => a.idx - b.idx)
+          .map(s => oldSections[s.idx].paragraphs.map(p => p.text).join('')).join('');
+        const coverageSim = computeSimilarity(combinedOldText, newText);
+        if (coverageSim >= 0.5) {
+          splitMergeInfo.push({
+            type: 'merge', sources: similarOld.map(s => s.idx),
+            targets: [ni], similarity: coverageSim
+          });
+          const primary = similarOld.slice().sort((a, b) => b.sim - a.sim)[0];
+          pairs.push({ oldIdx: primary.idx, newIdx: ni, sim: primary.sim, isMergePrimary: true });
+          newUsed.add(ni);
+          similarOld.forEach(s => oldUsed.add(s.idx));
         }
       }
     }
@@ -459,11 +535,59 @@ const VersionComparator = (() => {
       }
     }
 
+    // ========== 为 sectionDiffs 标记拆分/合并信息 ==========
+    for (const sd of sectionDiffs) {
+      const oldIdx = sd.oldSection ? oldSections.indexOf(sd.oldSection) : -1;
+      const newIdx = sd.newSection ? newSections.indexOf(sd.newSection) : -1;
+      for (const info of splitMergeInfo) {
+        if (info.type === 'split' && info.sources.includes(oldIdx)) {
+          sd.splitMerge = {
+            type: 'split',
+            sourceTitle: sd.oldSection ? sd.oldSection.title : '',
+            targetTitles: info.targets.map(ti => newSections[ti].title)
+          };
+        }
+        if (info.type === 'merge' && info.targets.includes(newIdx)) {
+          sd.splitMerge = {
+            type: 'merge',
+            sourceTitles: info.sources.map(si => oldSections[si].title),
+            targetTitle: sd.newSection ? sd.newSection.title : ''
+          };
+        }
+      }
+    }
+
+    // ========== 构建 sectionMapping: oldSectionId → newSectionId[] ==========
+    const sectionMapping = new Map();
+    for (const pair of pairs) {
+      const oldId = oldSections[pair.oldIdx].id;
+      if (!sectionMapping.has(oldId)) sectionMapping.set(oldId, []);
+      sectionMapping.get(oldId).push(newSections[pair.newIdx].id);
+    }
+    // 用拆分/合并信息覆盖，确保完整映射
+    for (const info of splitMergeInfo) {
+      if (info.type === 'split') {
+        const oldId = oldSections[info.sources[0]].id;
+        sectionMapping.set(oldId, info.targets.map(ti => newSections[ti].id));
+      } else if (info.type === 'merge') {
+        const newId = newSections[info.targets[0]].id;
+        for (const si of info.sources) {
+          const oldId = oldSections[si].id;
+          if (!sectionMapping.has(oldId)) sectionMapping.set(oldId, []);
+          if (!sectionMapping.get(oldId).includes(newId)) {
+            sectionMapping.get(oldId).push(newId);
+          }
+        }
+      }
+    }
+
     return {
       oldTitle: oldSections.length > 0 ? (oldSections[0]._sourceTitle || '原版合同') : '原版合同',
       newTitle: newSections.length > 0 ? (newSections[0]._sourceTitle || '修订版合同') : '修订版合同',
       sectionDiffs,
-      summary
+      summary,
+      sectionMapping,
+      splitMergeInfo
     };
   }
 

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>合同版本对比 - 回归测试</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; color: #333; line-height: 1.6; padding: 40px; max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 22px; margin-bottom: 16px; color: #2c3e50; }
+    h2 { font-size: 18px; margin: 20px 0 12px; color: #34495e; }
+    .test-summary { margin: 12px 0 16px; font-size: 16px; font-weight: 600; }
+    .test-passed-count { color: #27ae60; }
+    .test-failed-count { color: #e74c3c; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+    th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f1f3f5; font-weight: 600; }
+    .test-pass { background: #f0fff4; }
+    .test-fail { background: #fff5f5; }
+    .test-icon { text-align: center; font-size: 16px; font-weight: bold; }
+    .test-pass .test-icon { color: #27ae60; }
+    .test-fail .test-icon { color: #e74c3c; }
+    #loading { color: #999; font-style: italic; margin: 20px 0; }
+    .run-btn { padding: 8px 20px; background: #3498db; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin-bottom: 16px; }
+    .run-btn:hover { background: #2980b9; }
+    .fixture-hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>合同版本对比系统 - 回归测试</h1>
+  <button class="run-btn" id="runBtn" onclick="runTests()">运行测试</button>
+  <div id="loading">正在加载测试环境...</div>
+  <div id="results"></div>
+
+  <!-- 隐藏的 fixture 容器，由 JS 异步加载 -->
+  <pre id="fixture-v1" class="fixture-hidden"></pre>
+  <pre id="fixture-v2" class="fixture-hidden"></pre>
+
+  <!-- 加载被测模块（顺序重要） -->
+  <script src="../js/text-parser.js"></script>
+  <script src="../js/annotation-manager.js"></script>
+  <script src="../js/version-comparator.js"></script>
+  <script src="../js/negotiation-advisor.js"></script>
+  <script src="../js/risk-statistics.js"></script>
+  <script src="../js/comparison-exporter.js"></script>
+
+  <!-- 加载测试 -->
+  <script src="regression.js"></script>
+
+  <script>
+    // 异步加载 fixture 文件
+    let fixturesLoaded = false;
+
+    async function loadFixtures() {
+      try {
+        const [v1Resp, v2Resp] = await Promise.all([
+          fetch('fixtures/contract-v1.txt'),
+          fetch('fixtures/contract-v2.txt')
+        ]);
+        if (v1Resp.ok && v2Resp.ok) {
+          document.getElementById('fixture-v1').textContent = await v1Resp.text();
+          document.getElementById('fixture-v2').textContent = await v2Resp.text();
+          fixturesLoaded = true;
+        }
+      } catch (e) {
+        console.warn('无法加载 fixture 文件，将使用内联回退文本:', e.message);
+      }
+    }
+
+    async function runTests() {
+      const loadingEl = document.getElementById('loading');
+      const resultsEl = document.getElementById('results');
+      const runBtn = document.getElementById('runBtn');
+
+      runBtn.disabled = true;
+      loadingEl.style.display = 'block';
+      loadingEl.textContent = '正在运行测试...';
+      resultsEl.innerHTML = '';
+
+      // 确保 fixture 已加载
+      if (!fixturesLoaded) {
+        await loadFixtures();
+      }
+
+      // 运行测试
+      try {
+        RegressionTests.runAll();
+        RegressionTests.renderResults(resultsEl);
+      } catch (e) {
+        resultsEl.innerHTML = '<p style="color:red">测试运行出错: ' + e.message + '</p>';
+        console.error(e);
+      }
+
+      loadingEl.style.display = 'none';
+      runBtn.disabled = false;
+    }
+
+    // 页面加载后自动加载 fixture
+    loadFixtures().then(() => {
+      document.getElementById('loading').textContent = '测试环境就绪，点击"运行测试"开始。';
+    });
+  </script>
+</body>
+</html>
