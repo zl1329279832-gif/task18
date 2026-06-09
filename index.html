@@ -74,6 +74,14 @@
         </svg>
         导出项目
       </button>
+      <button class="btn btn-secondary" id="compareBtn" title="版本对比">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M16 3h5v5"/><path d="M8 3H3v5"/>
+          <path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/>
+          <path d="m15 9 6-6"/>
+        </svg>
+        版本对比
+      </button>
     </div>
   </header>
 
@@ -271,12 +279,52 @@
     </div>
   </div>
 
+  <!-- 版本对比上传对话框 -->
+  <div class="modal-overlay" id="comparisonModalOverlay" style="display:none">
+    <div class="modal" id="comparisonModal">
+      <div class="modal-header">
+        <h3>合同版本对比</h3>
+        <button class="modal-close" id="comparisonModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin-bottom:16px;color:#7f8c8d">上传原始合同和修订版，系统将自动识别变更并生成谈判建议。</p>
+        <div class="comparison-upload-form">
+          <div class="form-section">
+            <label>原始合同（旧版）：</label>
+            <div class="file-input-wrapper">
+              <input type="file" id="comparisonOldFile" accept=".txt,.html,.htm" class="file-input">
+              <span class="file-input-label" id="oldFileName">点击选择文件</span>
+            </div>
+          </div>
+          <div class="form-section">
+            <label>修订版合同（新版）：</label>
+            <div class="file-input-wrapper">
+              <input type="file" id="comparisonNewFile" accept=".txt,.html,.htm" class="file-input">
+              <span class="file-input-label" id="newFileName">点击选择文件</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="startCompareBtn" disabled>开始对比</button>
+        <button class="btn btn-ghost" id="cancelCompareBtn">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 版本对比视图（覆盖主布局） -->
+  <div id="comparisonView" style="display:none"></div>
+
   <script src="js/file-reader.js"></script>
   <script src="js/text-parser.js"></script>
   <script src="js/annotation-manager.js"></script>
   <script src="js/annotation-renderer.js"></script>
   <script src="js/risk-statistics.js"></script>
   <script src="js/report-exporter.js"></script>
+  <script src="js/version-comparator.js"></script>
+  <script src="js/negotiation-advisor.js"></script>
+  <script src="js/comparison-renderer.js"></script>
+  <script src="js/comparison-exporter.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

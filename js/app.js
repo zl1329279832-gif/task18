@@ -8,7 +8,10 @@ const App = (() => {
   let state = {
     sections: [],
     contractTitle: '',
-    fileLoaded: false
+    fileLoaded: false,
+    // 版本对比
+    comparisonMode: false,
+    comparisonData: null
   };
 
   // DOM引用缓存
@@ -94,7 +97,18 @@ const App = (() => {
       editComment: document.getElementById('editComment'),
       editSaveBtn: document.getElementById('editSaveBtn'),
       editCancelBtn: document.getElementById('editCancelBtn'),
-      editModalClose: document.getElementById('editModalClose')
+      editModalClose: document.getElementById('editModalClose'),
+      // 版本对比
+      compareBtn: document.getElementById('compareBtn'),
+      comparisonModalOverlay: document.getElementById('comparisonModalOverlay'),
+      comparisonModalClose: document.getElementById('comparisonModalClose'),
+      comparisonOldFile: document.getElementById('comparisonOldFile'),
+      comparisonNewFile: document.getElementById('comparisonNewFile'),
+      oldFileName: document.getElementById('oldFileName'),
+      newFileName: document.getElementById('newFileName'),
+      startCompareBtn: document.getElementById('startCompareBtn'),
+      cancelCompareBtn: document.getElementById('cancelCompareBtn'),
+      comparisonView: document.getElementById('comparisonView')
     };
   }
 
@@ -192,6 +206,26 @@ const App = (() => {
     DOM.editModalOverlay.addEventListener('click', (e) => {
       if (e.target === DOM.editModalOverlay) DOM.editModalOverlay.style.display = 'none';
     });
+
+    // 版本对比
+    DOM.compareBtn.addEventListener('click', () => {
+      DOM.comparisonModalOverlay.style.display = 'flex';
+    });
+    DOM.comparisonModalClose.addEventListener('click', () => {
+      DOM.comparisonModalOverlay.style.display = 'none';
+    });
+    DOM.cancelCompareBtn.addEventListener('click', () => {
+      DOM.comparisonModalOverlay.style.display = 'none';
+    });
+    DOM.comparisonModalOverlay.addEventListener('click', (e) => {
+      if (e.target === DOM.comparisonModalOverlay) DOM.comparisonModalOverlay.style.display = 'none';
+    });
+
+    // 文件选择状态更新
+    DOM.comparisonOldFile.addEventListener('change', updateCompareBtnState);
+    DOM.comparisonNewFile.addEventListener('change', updateCompareBtnState);
+
+    DOM.startCompareBtn.addEventListener('click', handleStartComparison);
   }
 
   /**
@@ -889,6 +923,155 @@ const App = (() => {
   }
 
   /**
+   * 版本对比：更新按钮状态
+   */
+  function updateCompareBtnState() {
+    const hasOld = DOM.comparisonOldFile.files.length > 0;
+    const hasNew = DOM.comparisonNewFile.files.length > 0;
+
+    DOM.oldFileName.textContent = hasOld ? DOM.comparisonOldFile.files[0].name : '点击选择文件';
+    DOM.newFileName.textContent = hasNew ? DOM.comparisonNewFile.files[0].name : '点击选择文件';
+    DOM.startCompareBtn.disabled = !(hasOld && hasNew);
+  }
+
+  /**
+   * 版本对比：开始对比
+   */
+  async function handleStartComparison() {
+    const oldFile = DOM.comparisonOldFile.files[0];
+    const newFile = DOM.comparisonNewFile.files[0];
+    if (!oldFile || !newFile) {
+      showToast('请选择两个合同文件', 'warning');
+      return;
+    }
+
+    try {
+      showToast('正在读取文件...', 'info');
+
+      // 读取两个文件
+      const oldResult = await FileReader.readFile(oldFile);
+      const newResult = await FileReader.readFile(newFile);
+
+      // 解析章节
+      const oldSections = TextParser.parseSections(oldResult.content, oldResult.type);
+      const newSections = TextParser.parseSections(newResult.content, newResult.type);
+
+      showToast('正在分析变更...', 'info');
+
+      // 快照当前批注
+      const oldAnnotations = AnnotationManager.snapshotAnnotations();
+
+      // 运行 diff 算法
+      const diffResult = VersionComparator.compareSections(oldSections, newSections);
+      diffResult.oldTitle = oldFile.name.replace(/\.\w+$/, '');
+      diffResult.newTitle = newFile.name.replace(/\.\w+$/, '');
+
+      // 迁移批注到新版（用于计算风险变化）
+      let newAnnotations = [];
+      let migrationStats = { total: 0, migrated: 0, invalidated: 0 };
+
+      if (oldAnnotations.length > 0) {
+        // 临时迁移
+        const migrationResult = TextParser.migrateAnnotations(oldAnnotations, newSections, oldSections);
+        newAnnotations = migrationResult.migrated || [];
+        migrationStats = {
+          total: oldAnnotations.length,
+          migrated: (migrationResult.stats?.exactMatch || 0) + (migrationResult.stats?.corrected || 0),
+          invalidated: migrationResult.stats?.invalidated || 0
+        };
+      }
+
+      // 分析风险变化
+      const riskDeltas = NegotiationAdvisor.getRiskDelta(diffResult, oldAnnotations, newAnnotations);
+
+      // 生成谈判建议
+      const suggestions = NegotiationAdvisor.analyzeChanges(diffResult, oldAnnotations, newAnnotations);
+
+      // 存储对比数据
+      state.comparisonData = {
+        diffResult,
+        oldSections,
+        newSections,
+        oldAnnotations,
+        newAnnotations,
+        suggestions,
+        riskDeltas,
+        migrationStats
+      };
+      state.comparisonMode = true;
+
+      // 关闭模态
+      DOM.comparisonModalOverlay.style.display = 'none';
+
+      // 隐藏主布局，显示对比视图
+      document.querySelector('.toolbar').style.display = 'none';
+      document.querySelector('.main-layout').style.display = 'none';
+      document.querySelector('.stats-panel').style.display = 'none';
+      DOM.comparisonView.style.display = 'flex';
+
+      // 初始化并渲染对比视图
+      ComparisonRenderer.init(DOM.comparisonView);
+      ComparisonRenderer.renderComparison(diffResult, suggestions, riskDeltas, migrationStats);
+
+      // 绑定退出和导出事件
+      setTimeout(() => {
+        const exitBtn = DOM.comparisonView.querySelector('#exitCompareBtn');
+        const exportBtn = DOM.comparisonView.querySelector('#exportCompareBtn');
+
+        if (exitBtn) {
+          exitBtn.addEventListener('click', exitComparisonMode);
+        }
+        if (exportBtn) {
+          exportBtn.addEventListener('click', handleExportComparison);
+        }
+      }, 50);
+
+      const summary = diffResult.summary;
+      showToast(`对比完成：${summary.sectionsModified} 处修改，${suggestions.length} 条谈判建议`, 'success');
+
+      // 重置文件输入
+      DOM.comparisonOldFile.value = '';
+      DOM.comparisonNewFile.value = '';
+      updateCompareBtnState();
+
+    } catch (err) {
+      showToast('对比失败：' + err.message, 'error');
+      console.error(err);
+    }
+  }
+
+  /**
+   * 版本对比：退出对比模式
+   */
+  function exitComparisonMode() {
+    state.comparisonMode = false;
+    state.comparisonData = null;
+
+    // 隐藏对比视图
+    DOM.comparisonView.style.display = 'none';
+    ComparisonRenderer.destroy();
+
+    // 恢复主布局
+    document.querySelector('.toolbar').style.display = '';
+    document.querySelector('.main-layout').style.display = '';
+    document.querySelector('.stats-panel').style.display = '';
+  }
+
+  /**
+   * 版本对比：导出对比报告
+   */
+  function handleExportComparison() {
+    if (!state.comparisonData) {
+      showToast('无对比数据', 'warning');
+      return;
+    }
+
+    const { diffResult, suggestions, riskDeltas, migrationStats } = state.comparisonData;
+    ComparisonExporter.exportComparisonReport(diffResult, suggestions, riskDeltas, migrationStats);
+    showToast('对比报告导出成功', 'success');
+  }
+
+  /**
    * 启用/禁用控件
    */
   function enableControls(enabled) {
@@ -923,5 +1106,5 @@ const App = (() => {
   // 页面加载完成后初始化
   document.addEventListener('DOMContentLoaded', init);
 
-  return { init, showToast, getSections };
+  return { init, showToast, getSections, exitComparisonMode };
 })();

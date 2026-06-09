@@ -329,6 +329,21 @@ const AnnotationManager = (() => {
     });
   }
 
+  /**
+   * 快照当前批注（深拷贝，不触发监听器）
+   */
+  function snapshotAnnotations() {
+    return JSON.parse(JSON.stringify(annotations));
+  }
+
+  /**
+   * 从快照恢复批注
+   */
+  function restoreFromSnapshot(snapshot) {
+    annotations = snapshot;
+    notifyListeners('restore', null);
+  }
+
   return {
     RISK_TYPES, RISK_LEVELS, STATUS_FLOW,
     addAnnotation, updateAnnotation, deleteAnnotation, changeStatus,
@@ -337,6 +352,7 @@ const AnnotationManager = (() => {
     getAnnotationsByRiskType, getAnnotationsByStatus,
     importAnnotations, migrateToNewSections,
     clearAll,
-    checkDuplicate, onChange
+    checkDuplicate, onChange,
+    snapshotAnnotations, restoreFromSnapshot
   };
 })();

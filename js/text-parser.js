@@ -631,8 +631,16 @@ const TextParser = (() => {
     return results;
   }
 
+  /**
+   * 计算段落文本哈希（用于快速身份比对）
+   */
+  function computeParagraphHash(text) {
+    return hashString(text);
+  }
+
   return {
     parseSections, getFullText, validateAnnotationPosition, detectSectionHeader,
-    computeRangeId, computeAnchorContext, migrateAnnotations, hashString
+    computeRangeId, computeAnchorContext, migrateAnnotations, hashString,
+    findAnchorInParagraph, computeParagraphHash
   };
 })();
